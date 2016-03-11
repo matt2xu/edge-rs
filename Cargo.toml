@@ -1,0 +1,11 @@
+[package]
+name = "edge"
+version = "0.0.1"
+
+[dependencies]
+time = "0.1"
+
+[dependencies.hyper]
+version = "0.7.2"
+default-features = false
+features = []
