@@ -1,6 +1,6 @@
 extern crate edge;
 
-use edge::{Container, Cookie, Request, Response};
+use edge::{Container, Cookie, Request, Response, Status};
 use std::io::Result;
 use std::sync::Mutex;
 
@@ -18,30 +18,44 @@ impl MyApp {
         }
     }
 
-    fn home(&self, req: &Request, mut res: Response) -> Result<()> {
-        let mut cookies = req.cookies();
-        println!("cookies: {}", cookies.find(|cookie| cookie.name == "name")
-            .map_or("no name", |cookie| &cookie.value));
-
+    fn home(&self, _req: &Request, mut res: Response) -> Result<()> {
         let cnt = {
             let mut counter = self.counter.lock().unwrap();
             *counter += 1;
             *counter
         };
-        
+
+        println!("in home, count = {}, path = {}", cnt, self.tmpl_path);
+
+        // set length manually because we're streaming
+        res.set_len(80);
+        res.set_type("text/html");
+        res.stream(|writer| writer.write("<html><head><title>home</title></head><body><h1>Hello, world!</h1></body></html>".as_bytes()))
+    }
+
+    fn settings(&self, req: &Request, mut res: Response) -> Result<()> {
+        let mut cookies = req.cookies();
+        println!("name cookie: {}", cookies.find(|cookie| cookie.name == "name")
+            .map_or("nope", |cookie| &cookie.value));
+
+        //res.render(self.tmpl_path + "/sample.tpl", data)
+
+        res.set_type("text/html");
+        res.send("<html><head><title>Settings</title></head><body><h1>Settings</h1></body></html>")
+    }
+
+    fn login(&self, _req: &Request, mut res: Response) -> Result<()> {
+        println!("TODO: get username and set cookie");
+
+        //res.render(self.tmpl_path + "/sample.tpl", data)
+        res.set_status(Status::NoContent);
+
         res.cookie("name", "John", Some(|cookie: &mut Cookie| {
             cookie.domain = Some("localhost".to_string());
             cookie.httponly = true;
         }));
 
-        println!("in home, count = {}, path = {}", cnt, self.tmpl_path);
-        //res.render(self.tmpl_path + "/sample.tpl", data)
-        //res.send("toto")
-
-        // set everything manually because we're streaming
-        res.set_len(80);
-        res.set_type("text/html".to_owned());
-        res.stream(|writer| writer.write("<html><head><title>home</title></head><body><h1>Hello, world!</h1></body></html>".as_bytes()))
+        res.send([])
     }
 
 }
@@ -50,5 +64,7 @@ fn main() {
     let app = MyApp::new();
     let mut cter = Container::new(app);
     cter.get("/", MyApp::home);
+    cter.get("/settings", MyApp::settings);
+    cter.post("/login", MyApp::login);
     cter.start("0.0.0.0:3000").unwrap();
 }
