@@ -23,9 +23,9 @@ impl<'a, 'b> Request<'a, 'b> {
         }
     }
 
-    pub fn cookies(&self) -> Vec<Cookie> {
-        self.inner.headers.get::<CookieHeader>().map_or(Vec::new(),
-            |&CookieHeader(ref cookies)| cookies.clone()
+    pub fn cookies(&self) -> std::slice::Iter<Cookie> {
+        self.inner.headers.get::<CookieHeader>().map_or([].iter(),
+            |&CookieHeader(ref cookies)| cookies.iter()
         )
     }
 }

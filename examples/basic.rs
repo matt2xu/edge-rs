@@ -19,8 +19,9 @@ impl MyApp {
     }
 
     fn home(&self, req: &Request, mut res: Response) -> Result<()> {
-        let cookies = req.cookies();
-        println!("cookies: {:?}", cookies);
+        let mut cookies = req.cookies();
+        println!("cookies: {}", cookies.find(|cookie| cookie.name == "name")
+            .map_or("no name", |cookie| &cookie.value));
 
         let cnt = {
             let mut counter = self.counter.lock().unwrap();
@@ -29,7 +30,7 @@ impl MyApp {
         };
         
         res.cookie("name", "John", Some(|cookie: &mut Cookie| {
-            cookie.domain = Some("/".to_string());
+            cookie.domain = Some("localhost".to_string());
             cookie.httponly = true;
         }));
 
@@ -37,7 +38,7 @@ impl MyApp {
         //res.render(self.tmpl_path + "/sample.tpl", data)
         //res.send("toto")
 
-        // set everything manually because we're streaming1
+        // set everything manually because we're streaming
         res.set_len(80);
         res.set_type("text/html".to_owned());
         res.stream(|writer| writer.write("<html><head><title>home</title></head><body><h1>Hello, world!</h1></body></html>".as_bytes()))
