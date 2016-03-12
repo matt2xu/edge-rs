@@ -18,7 +18,7 @@ impl MyApp {
         }
     }
 
-    fn home(&self, _req: &Request, mut res: Response) -> Result<()> {
+    fn home(&self, _req: &mut Request, mut res: Response) -> Result<()> {
         let cnt = {
             let mut counter = self.counter.lock().unwrap();
             *counter += 1;
@@ -28,12 +28,13 @@ impl MyApp {
         println!("in home, count = {}, path = {}", cnt, self.tmpl_path);
 
         // set length manually because we're streaming
+        res.set_status(Status::Ok);
         res.set_len(80);
         res.set_type("text/html");
         res.stream(|writer| writer.write("<html><head><title>home</title></head><body><h1>Hello, world!</h1></body></html>".as_bytes()))
     }
 
-    fn settings(&self, req: &Request, mut res: Response) -> Result<()> {
+    fn settings(&self, req: &mut Request, mut res: Response) -> Result<()> {
         let mut cookies = req.cookies();
         println!("name cookie: {}", cookies.find(|cookie| cookie.name == "name")
             .map_or("nope", |cookie| &cookie.value));
@@ -44,18 +45,19 @@ impl MyApp {
         res.send("<html><head><title>Settings</title></head><body><h1>Settings</h1></body></html>")
     }
 
-    fn login(&self, _req: &Request, mut res: Response) -> Result<()> {
-        println!("TODO: get username and set cookie");
+    fn login(&self, req: &mut Request, mut res: Response) -> Result<()> {
+        let form = try!(req.form());
+        match form.iter().find(|pair| pair.0 == "username").map(|pair| &pair.1) {
+            None => (),
+            Some(ref username) => {
+                res.cookie("name", &username, Some(|cookie: &mut Cookie| {
+                    cookie.domain = Some("localhost".to_string());
+                    cookie.httponly = true;
+                }));
+            }
+        }
 
-        //res.render(self.tmpl_path + "/sample.tpl", data)
-        res.set_status(Status::NoContent);
-
-        res.cookie("name", "John", Some(|cookie: &mut Cookie| {
-            cookie.domain = Some("localhost".to_string());
-            cookie.httponly = true;
-        }));
-
-        res.send([])
+        res.end(Status::NoContent)
     }
 
 }

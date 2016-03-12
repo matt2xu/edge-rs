@@ -1,4 +1,5 @@
 extern crate hyper;
+extern crate url;
 
 use hyper::header::Cookie as CookieHeader;
 use hyper::header::{ContentLength, SetCookie};
@@ -11,7 +12,7 @@ use hyper::server::Request as HttpRequest;
 use hyper::server::Response as HttpResponse;
 
 use std::collections::HashMap;
-use std::io::{Result, Write};
+use std::io::{Read, Result, Write};
 
 pub struct Request<'a, 'b: 'a> {
     inner: HttpRequest<'a, 'b>
@@ -24,10 +25,25 @@ impl<'a, 'b> Request<'a, 'b> {
         }
     }
 
+    /// Reads this request's body until the end, and returns it as a vector of bytes.
+    pub fn body(&mut self) -> Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        try!(self.inner.read_to_end(&mut buf));
+        Ok(buf)
+    }
+
+    /// Returns an iterator over the cookies of this request.
     pub fn cookies(&self) -> std::slice::Iter<Cookie> {
         self.inner.headers.get::<CookieHeader>().map_or([].iter(),
             |&CookieHeader(ref cookies)| cookies.iter()
         )
+    }
+
+    /// Reads the body of this request, parses it as an application/x-www-form-urlencoded format,
+    /// and returns it as a vector of (name, value) pairs.
+    /// TODO: should check that Content-Type is actually application/x-www-form-urlencoded, and return an error otherwise
+    pub fn form(&mut self) -> Result<Vec<(String, String)>> {
+        Ok(url::form_urlencoded::parse(&try!(self.body())))
     }
 }
 
@@ -41,7 +57,9 @@ impl<'a> Response<'a> {
             inner: inner
         }
     }
-    
+
+    /// Sets a cookie with the given name and value.
+    /// If set, the set_options function will be called to update the cookie's options.
     pub fn cookie<F>(&mut self, name: &str, value: &str, set_options: Option<F>) where F: Fn(&mut Cookie) {
         let mut cookie = Cookie::new(name.to_owned(), value.to_owned());
         set_options.map(|f| f(&mut cookie));
@@ -53,22 +71,34 @@ impl<'a> Response<'a> {
         }
     }
 
+    /// Ends this response with the given status and an empty body
+    pub fn end(mut self, status: Status) -> Result<()> {
+        self.set_status(status);
+        self.send([])
+    }
+
+    /// Sends the given content and ends this response.
+    /// Status defaults to 200 Ok, headers must have been set before this method is called.
     pub fn send<D: AsRef<[u8]>>(self, content: D) -> Result<()> {
         self.inner.send(content.as_ref())
     }
 
+    /// Sets the Content-Length header.
     pub fn set_len(&mut self, len: u64) {
         self.inner.headers_mut().set(ContentLength(len))
     }
 
+    /// Sets the status code of this response.
     pub fn set_status(&mut self, status: Status) {
         *self.inner.status_mut() = status
     }
 
+    /// Sets the Content-Type header.
     pub fn set_type<S: Into<Vec<u8>>>(&mut self, mime: S) {
         self.inner.headers_mut().set_raw("Content-Type", vec![mime.into()])
     }
 
+    /// Writes the body of this response using the given source function.
     pub fn stream<F, R>(self, source: F) -> Result<()> where F: FnOnce(&mut Write) -> Result<R> {
         let mut streaming = try!(self.inner.start());
         try!(source(&mut streaming));
@@ -76,7 +106,8 @@ impl<'a> Response<'a> {
     }
 }
 
-pub type Callback<T> = fn(&T, &Request, Response) -> Result<()>;
+/// Signature for a callback method
+pub type Callback<T> = fn(&T, &mut Request, Response) -> Result<()>;
 
 struct Router<T> {
     paths: HashMap<String, Callback<T>>
@@ -100,6 +131,7 @@ impl<T> Router<T> {
     }
 }
 
+/// Container of an application.
 pub struct Container<T: Send + Sync> {
     inner: T,
     router_get: Router<T>,
@@ -170,9 +202,15 @@ impl<T: 'static + Send + Sync> Container<T> {
 
 impl<T: 'static + Send + Sync> Handler for Container<T> {
     fn handle<'a, 'k>(&'a self, req: HttpRequest<'a, 'k>, mut res: HttpResponse<'a, Fresh>) {
-        match self.find_callback(&req) {
+        let mut req = Request::new(req);
+        match self.find_callback(&req.inner) {
             None => *res.status_mut() = Status::NotFound,
-            Some(f) => f(&self.inner, &Request::new(req), Response::new(res)).unwrap()
+            Some(f) => f(&self.inner, &mut req, Response::new(res)).unwrap()
         }
+
+        // read the request body in case the callback did not read it
+        // avoids a weird bug where Hyper does not correctly parse the method
+        let mut buf = Vec::new();
+        req.inner.read_to_end(&mut buf).unwrap();
     }
 }
