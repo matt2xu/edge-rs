@@ -1,8 +1,9 @@
 extern crate hyper;
 extern crate url;
+extern crate mime;
 
 use hyper::header::Cookie as CookieHeader;
-use hyper::header::{ContentLength, SetCookie};
+use hyper::header::{ContentLength, ContentType, SetCookie};
 pub use hyper::header::CookiePair as Cookie;
 pub use hyper::status::StatusCode as Status;
 
@@ -11,8 +12,10 @@ use hyper::server::{Handler, Server};
 use hyper::server::Request as HttpRequest;
 use hyper::server::Response as HttpResponse;
 
+use mime::{Mime, TopLevel, SubLevel};
+
 use std::collections::HashMap;
-use std::io::{Read, Result, Write};
+use std::io::{Error, ErrorKind, Read, Result, Write};
 
 pub struct Request<'a, 'b: 'a> {
     inner: HttpRequest<'a, 'b>
@@ -41,9 +44,13 @@ impl<'a, 'b> Request<'a, 'b> {
 
     /// Reads the body of this request, parses it as an application/x-www-form-urlencoded format,
     /// and returns it as a vector of (name, value) pairs.
-    /// TODO: should check that Content-Type is actually application/x-www-form-urlencoded, and return an error otherwise
     pub fn form(&mut self) -> Result<Vec<(String, String)>> {
-        Ok(url::form_urlencoded::parse(&try!(self.body())))
+        match self.inner.headers.get::<ContentType>() {
+            Some(&ContentType(Mime(TopLevel::Application, SubLevel::WwwFormUrlEncoded, _))) =>
+                Ok(url::form_urlencoded::parse(&try!(self.body()))),
+            Some(_) => Err(Error::new(ErrorKind::InvalidInput, "invalid Content-Type, expected application/x-www-form-urlencoded")),
+            None => Err(Error::new(ErrorKind::InvalidInput, "missing Content-Type header"))
+        }
     }
 }
 

@@ -5,8 +5,9 @@ version = "0.0.1"
 [dependencies]
 time = "0.1"
 url = "0.5.7"
+mime = "0.1.3"
 
 [dependencies.hyper]
 version = "0.7.2"
 default-features = false
-features = []
+features = ["cookie"]
