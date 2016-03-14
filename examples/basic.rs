@@ -65,8 +65,8 @@ impl MyApp {
 fn main() {
     let app = MyApp::new();
     let mut cter = Container::new(app);
-    cter.get("/", MyApp::home);
-    cter.get("/settings", MyApp::settings);
-    cter.post("/login", MyApp::login);
+    cter.get("", MyApp::home);
+    cter.get("settings", MyApp::settings);
+    cter.post("login", MyApp::login);
     cter.start("0.0.0.0:3000").unwrap();
 }

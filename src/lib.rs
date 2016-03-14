@@ -14,18 +14,27 @@ use hyper::server::Response as HttpResponse;
 
 use mime::{Mime, TopLevel, SubLevel};
 
-use std::collections::HashMap;
 use std::io::{Error, ErrorKind, Read, Result, Write};
+use std::ops::Drop;
 
 pub struct Request<'a, 'b: 'a> {
-    inner: HttpRequest<'a, 'b>
+    inner: HttpRequest<'a, 'b>,
+    path: Vec<String>,
+    query: Option<String>,
+    fragment: Option<String>
 }
 
 impl<'a, 'b> Request<'a, 'b> {
-    fn new(inner: HttpRequest<'a, 'b>) -> Request<'a, 'b> {
-        Request {
-            inner: inner
-        }
+    fn new(inner: HttpRequest<'a, 'b>) -> (Request<'a, 'b>, url::ParseResult<()>) {
+        let ((path, query, fragment), parse_result) = match inner.uri {
+            hyper::uri::RequestUri::AbsolutePath(ref path) => match url::parse_path(path) {
+                Ok(res) => (res, Ok(())),
+                Err(e) => ((Vec::new(), None, None), Err(e))
+            },
+            _ => ((vec!["*".to_owned()], None, None), Ok(()))
+        };
+
+        (Request {inner: inner, path: path, query: query, fragment: fragment}, parse_result)
     }
 
     /// Reads this request's body until the end, and returns it as a vector of bytes.
@@ -51,6 +60,15 @@ impl<'a, 'b> Request<'a, 'b> {
             Some(_) => Err(Error::new(ErrorKind::InvalidInput, "invalid Content-Type, expected application/x-www-form-urlencoded")),
             None => Err(Error::new(ErrorKind::InvalidInput, "missing Content-Type header"))
         }
+    }
+}
+
+impl<'a, 'b> Drop for Request<'a, 'b> {
+    fn drop(&mut self) {
+        // read the request body in case the callback did not read it
+        // avoids a weird bug where Hyper does not correctly parse the method
+        let mut buf = Vec::new();
+        self.inner.read_to_end(&mut buf).unwrap();
     }
 }
 
@@ -116,25 +134,50 @@ impl<'a> Response<'a> {
 /// Signature for a callback method
 pub type Callback<T> = fn(&T, &mut Request, Response) -> Result<()>;
 
+/// A segment is either a fixed string, or a variable with a name
+#[derive(Debug, Clone)]
+enum Segment {
+    Fixed(String),
+    Variable(String)
+}
+
+type Route = Vec<Segment>;
+
+/// Router structure
 struct Router<T> {
-    paths: HashMap<String, Callback<T>>
+    routes: Vec<(Route, Callback<T>)>
 }
 
 impl<T> Router<T> {
     fn new() -> Router<T> {
         Router {
-            paths: HashMap::new()
+            routes: Vec::new()
         }
     }
 
-    fn find(&self, path: &String) -> Option<Callback<T>> {
-        println!("path: {}", path);
-        self.paths.get(path).map(|&c| c)
+    /// Finds the first route (if any) that matches the given path, and returns the associated callback.
+    fn find(&self, path: &Vec<String>) -> Option<Callback<T>> {
+        println!("path: {:?}", path);
+        'top: for &(ref route, ref callback) in self.routes.iter() {
+            println!("route: {:?}", route);
+            let mut it_route = route.iter();
+            for actual in path.iter() {
+                match it_route.next() {
+                    Some(&Segment::Fixed(ref fixed)) if fixed != actual => continue 'top,
+                    _ => ()
+                }
+            }
+
+            if it_route.next().is_none() {
+                return Some(*callback);
+            }
+        }
+        None
     }
 
-    fn insert(&mut self, path: &str, method: Callback<T>) {
-        println!("register callback for path: {}", path);
-        self.paths.insert(path.to_owned(), method);
+    fn insert(&mut self, route: Route, method: Callback<T>) {
+        println!("register callback for route: {:?}", route);
+        self.routes.push((route, method));
     }
 }
 
@@ -146,6 +189,10 @@ pub struct Container<T: Send + Sync> {
     router_put: Router<T>,
     router_delete: Router<T>,
     router_head: Router<T>
+}
+
+fn route(path: &str) -> Route {
+    vec![Segment::Fixed(path.to_owned())]
 }
 
 impl<T: 'static + Send + Sync> Container<T> {
@@ -162,23 +209,23 @@ impl<T: 'static + Send + Sync> Container<T> {
     }
 
     pub fn get(&mut self, path: &str, method: Callback<T>) {
-        self.router_get.insert(path, method);
+        self.router_get.insert(route(path), method);
     }
 
     pub fn post(&mut self, path: &str, method: Callback<T>) {
-        self.router_post.insert(path, method);
+        self.router_post.insert(route(path), method);
     }
 
     pub fn put(&mut self, path: &str, method: Callback<T>) {
-        self.router_put.insert(path, method);
+        self.router_put.insert(route(path), method);
     }
 
     pub fn delete(&mut self, path: &str, method: Callback<T>) {
-        self.router_delete.insert(path, method);
+        self.router_delete.insert(route(path), method);
     }
 
     pub fn head(&mut self, path: &str, method: Callback<T>) {
-        self.router_head.insert(path, method);
+        self.router_head.insert(route(path), method);
     }
 
     pub fn start(self, addr: &str) -> Result<()> {
@@ -186,38 +233,40 @@ impl<T: 'static + Send + Sync> Container<T> {
         Ok(())
     }
 
-    fn find_callback<'a, 'k>(&'a self, req: &'a HttpRequest<'a, 'k>) -> Option<Callback<T>> {
+    fn find_callback<'a, 'k>(&'a self, req: &'a Request<'a, 'k>) -> Option<Callback<T>> {
         use hyper::method::Method::*;
 
-        let path = match req.uri {
-            hyper::uri::RequestUri::AbsolutePath(ref path) => path,
-            _ => return None
-        };
-
-        let router = match req.method {
+        let router = match req.inner.method {
             Get => &self.router_get,
             Post => &self.router_post,
             Put => &self.router_put,
             Delete => &self.router_delete,
             Head => &self.router_head,
-            _ => { println!("unexpected method: {}", req.method); return None }
+            ref method => { println!("unexpected method: {}", method); return None }
         };
 
-        router.find(path)
+        router.find(&req.path)
     }
 }
 
+/// Implements Handler for our Container. Wraps the HTTP request/response in our own types.
 impl<T: 'static + Send + Sync> Handler for Container<T> {
-    fn handle<'a, 'k>(&'a self, req: HttpRequest<'a, 'k>, mut res: HttpResponse<'a, Fresh>) {
-        let mut req = Request::new(req);
-        match self.find_callback(&req.inner) {
-            None => *res.status_mut() = Status::NotFound,
-            Some(f) => f(&self.inner, &mut req, Response::new(res)).unwrap()
-        }
+    fn handle<'a, 'k>(&'a self, req: HttpRequest<'a, 'k>, res: HttpResponse<'a, Fresh>) {
+        let mut res = Response::new(res);
 
-        // read the request body in case the callback did not read it
-        // avoids a weird bug where Hyper does not correctly parse the method
-        let mut buf = Vec::new();
-        req.inner.read_to_end(&mut buf).unwrap();
+        // we do this so that req can be dropped (see Drop impl for Request)
+        let (mut req, parse_result) = Request::new(req);
+        match parse_result {
+            Err(parse_error) => {
+                res.set_status(Status::BadRequest);
+                res.send(format!("{}", parse_error)).unwrap();
+            },
+            Ok(()) => {
+                match self.find_callback(&req) {
+                    None => res.set_status(Status::NotFound),
+                    Some(f) => f(&self.inner, &mut req, res).unwrap()
+                }
+            }
+        }
     }
 }
