@@ -34,6 +34,11 @@ impl MyApp {
         res.stream(|writer| writer.write("<html><head><title>home</title></head><body><h1>Hello, world!</h1></body></html>".as_bytes()))
     }
 
+    fn echo(&self, _req: &mut Request, mut res: Response) -> Result<()> {
+        res.set_type("text/plain");
+        res.send("echo")
+    }
+
     fn settings(&self, req: &mut Request, mut res: Response) -> Result<()> {
         let mut cookies = req.cookies();
         println!("name cookie: {}", cookies.find(|cookie| cookie.name == "name")
@@ -66,6 +71,7 @@ fn main() {
     let app = MyApp::new();
     let mut cter = Container::new(app);
     cter.get("", MyApp::home);
+    cter.get("echo/:name", MyApp::echo);
     cter.get("settings", MyApp::settings);
     cter.post("login", MyApp::login);
     cter.start("0.0.0.0:3000").unwrap();

@@ -141,7 +141,11 @@ enum Segment {
     Variable(String)
 }
 
-type Route = Vec<Segment>;
+/// A route is something like "fixed/:some_var/:another_var".
+#[derive(Debug)]
+pub struct Route {
+    segments: Vec<Segment>
+}
 
 /// Router structure
 struct Router<T> {
@@ -160,7 +164,7 @@ impl<T> Router<T> {
         println!("path: {:?}", path);
         'top: for &(ref route, ref callback) in self.routes.iter() {
             println!("route: {:?}", route);
-            let mut it_route = route.iter();
+            let mut it_route = route.segments.iter();
             for actual in path.iter() {
                 match it_route.next() {
                     Some(&Segment::Fixed(ref fixed)) if fixed != actual => continue 'top,
@@ -181,6 +185,23 @@ impl<T> Router<T> {
     }
 }
 
+/// Creates a Route from a &str.
+impl<'a> Into<Route> for &'a str {
+    fn into(self) -> Route {
+        let route = Route {
+            segments:
+                self.split('/').map(|segment| if segment.len() > 0 && &segment[0..1] == ":" {
+                        Segment::Variable(segment.to_owned())
+                    } else {
+                        Segment::Fixed(segment.to_owned())
+                    }
+                ).collect::<Vec<Segment>>()
+        };
+        println!("into from {} to {:?}", self, route);
+        route
+    }
+}
+
 /// Container of an application.
 pub struct Container<T: Send + Sync> {
     inner: T,
@@ -189,10 +210,6 @@ pub struct Container<T: Send + Sync> {
     router_put: Router<T>,
     router_delete: Router<T>,
     router_head: Router<T>
-}
-
-fn route(path: &str) -> Route {
-    vec![Segment::Fixed(path.to_owned())]
 }
 
 impl<T: 'static + Send + Sync> Container<T> {
@@ -208,24 +225,24 @@ impl<T: 'static + Send + Sync> Container<T> {
         }
     }
 
-    pub fn get(&mut self, path: &str, method: Callback<T>) {
-        self.router_get.insert(route(path), method);
+    pub fn get<S: Into<Route>>(&mut self, path: S, method: Callback<T>) {
+        self.router_get.insert(path.into(), method);
     }
 
-    pub fn post(&mut self, path: &str, method: Callback<T>) {
-        self.router_post.insert(route(path), method);
+    pub fn post<S: Into<Route>>(&mut self, path: S, method: Callback<T>) {
+        self.router_post.insert(path.into(), method);
     }
 
-    pub fn put(&mut self, path: &str, method: Callback<T>) {
-        self.router_put.insert(route(path), method);
+    pub fn put<S: Into<Route>>(&mut self, path: S, method: Callback<T>) {
+        self.router_put.insert(path.into(), method);
     }
 
-    pub fn delete(&mut self, path: &str, method: Callback<T>) {
-        self.router_delete.insert(route(path), method);
+    pub fn delete<S: Into<Route>>(&mut self, path: S, method: Callback<T>) {
+        self.router_delete.insert(path.into(), method);
     }
 
-    pub fn head(&mut self, path: &str, method: Callback<T>) {
-        self.router_head.insert(route(path), method);
+    pub fn head<S: Into<Route>>(&mut self, path: S, method: Callback<T>) {
+        self.router_head.insert(path.into(), method);
     }
 
     pub fn start(self, addr: &str) -> Result<()> {
