@@ -34,9 +34,11 @@ impl MyApp {
         res.stream(|writer| writer.write("<html><head><title>home</title></head><body><h1>Hello, world!</h1></body></html>".as_bytes()))
     }
 
-    fn echo(&self, _req: &mut Request, mut res: Response) -> Result<()> {
+    fn hello(&self,  req: &mut Request, mut res: Response) -> Result<()> {
+        let first_name = req.params().find(|&&(ref k, _)| k == "first_name").map_or("John", |pair| &pair.1);
+        let last_name = req.params().find(|&&(ref k, _)| k == "last_name").map_or("Doe", |pair| &pair.1);
         res.set_type("text/plain");
-        res.send("echo")
+        res.send(format!("hello {} {}!", first_name, last_name))
     }
 
     fn settings(&self, req: &mut Request, mut res: Response) -> Result<()> {
@@ -70,9 +72,9 @@ impl MyApp {
 fn main() {
     let app = MyApp::new();
     let mut cter = Container::new(app);
-    cter.get("", MyApp::home);
-    cter.get("echo/:name", MyApp::echo);
-    cter.get("settings", MyApp::settings);
-    cter.post("login", MyApp::login);
+    cter.get("/", MyApp::home);
+    cter.get("/hello/:first_name/:last_name", MyApp::hello);
+    cter.get("/settings", MyApp::settings);
+    cter.post("/login", MyApp::login);
     cter.start("0.0.0.0:3000").unwrap();
 }
