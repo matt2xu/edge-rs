@@ -67,6 +67,11 @@ impl MyApp {
         res.end(Status::NoContent)
     }
 
+    fn files(&self, req: &mut Request, res: Response) -> Result<()> {
+        let path = req.path()[1..].join("/");
+        res.send_file("web/".to_string() + &path)
+    }
+
 }
 
 fn main() {
@@ -75,6 +80,7 @@ fn main() {
     cter.get("/", MyApp::home);
     cter.get("/hello/:first_name/:last_name", MyApp::hello);
     cter.get("/settings", MyApp::settings);
+    cter.get("/static", MyApp::files);
     cter.post("/login", MyApp::login);
     cter.start("0.0.0.0:3000").unwrap();
 }

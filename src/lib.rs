@@ -12,9 +12,11 @@ use hyper::server::{Handler, Server};
 use hyper::server::Request as HttpRequest;
 use hyper::server::Response as HttpResponse;
 
-use mime::{Mime, TopLevel, SubLevel};
+use mime::{Mime, TopLevel, SubLevel, Attr, Value};
 
 use std::io::{Error, ErrorKind, Read, Result, Write};
+use std::fs::File;
+use std::path::Path;
 use std::ops::Drop;
 
 pub struct Request<'a, 'b: 'a> {
@@ -70,6 +72,11 @@ impl<'a, 'b> Request<'a, 'b> {
     pub fn params(&self) -> std::slice::Iter<(String, String)> {
         self.params.as_ref().map_or([].iter(), |params| params.iter())
     }
+
+    /// Returns the path of this request, i.e. the list of segments of the URL.
+    pub fn path(&self) -> &Vec<String> {
+        &self.path
+    }
 }
 
 impl<'a, 'b> Drop for Request<'a, 'b> {
@@ -115,6 +122,48 @@ impl<'a> Response<'a> {
     /// Status defaults to 200 Ok, headers must have been set before this method is called.
     pub fn send<D: AsRef<[u8]>>(self, content: D) -> Result<()> {
         self.inner.send(content.as_ref())
+    }
+
+    /// Sends the given file, setting the Content-Type based on the file's extension.
+    /// Known extensions are htm, html, jpg, jpeg, png, js, css.
+    /// If the file does not exist, this method sends a 404 Not Found response.
+    pub fn send_file<P: AsRef<Path>>(mut self, path: P) -> Result<()> {
+        if !self.inner.headers().has::<ContentType>() {
+            let extension = path.as_ref().extension();
+            if let Some(ext) = extension {
+                let content_type = match ext.to_string_lossy().as_ref() {
+                    "htm" | "html" => Some(ContentType::html()),
+                    "jpg" | "jpeg" => Some(ContentType::jpeg()),
+                    "png" => Some(ContentType::png()),
+                    "js" => Some(ContentType(Mime(TopLevel::Application, SubLevel::Javascript, vec![(Attr::Charset, Value::Utf8)]))),
+                    "css" => Some(ContentType(Mime(TopLevel::Application, SubLevel::Css, vec![(Attr::Charset, Value::Utf8)]))),
+                    _ => None
+                };
+
+                if let Some(content_type) = content_type {
+                    self.inner.headers_mut().set(content_type);
+                }
+            }
+        }
+
+        // read the whole file at once and send it
+        // probably not the best idea for big files, we should use stream instead in that case
+        match File::open(path) {
+            Ok(mut file) => {
+                let mut buf = Vec::with_capacity(file.metadata().ok().map_or(1024, |meta| meta.len() as usize));
+                if let Err(err) = file.read_to_end(&mut buf) {
+                    self.set_status(Status::InternalServerError);
+                    self.send(format!("{}", err))
+                } else {
+                    self.send(buf)
+                }
+            },
+            Err(ref err) if err.kind() == ErrorKind::NotFound => self.end(Status::NotFound),
+            Err(ref err) => {
+                self.set_status(Status::InternalServerError);
+                self.send(format!("{}", err))
+            }
+        }
     }
 
     /// Sets the Content-Length header.
