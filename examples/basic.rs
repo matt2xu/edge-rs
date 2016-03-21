@@ -1,6 +1,7 @@
 extern crate edge;
 
 use edge::{Container, Cookie, Request, Response, Status};
+use edge::header::AccessControlAllowOrigin;
 use std::io::Result;
 use std::sync::Mutex;
 
@@ -28,7 +29,7 @@ impl MyApp {
         println!("in home, count = {}, path = {}", cnt, self.tmpl_path);
 
         // set length manually because we're streaming
-        res.status(Status::Ok).len(80).content_type("text/html");
+        res.status(Status::Ok).len(80).content_type("text/html").header(AccessControlAllowOrigin::Any);
         res.stream(|writer| writer.write("<html><head><title>home</title></head><body><h1>Hello, world!</h1></body></html>".as_bytes()))
     }
 

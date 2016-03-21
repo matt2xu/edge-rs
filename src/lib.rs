@@ -2,9 +2,9 @@ extern crate hyper;
 extern crate url;
 extern crate mime;
 
-use hyper::header::Cookie as CookieHeader;
-use hyper::header::{ContentLength, ContentType, Location, SetCookie};
-pub use hyper::header::CookiePair as Cookie;
+pub use hyper::header as header;
+use header::{Cookie as CookieHeader, ContentLength, ContentType, Header, HeaderFormat, Location, SetCookie};
+pub use header::CookiePair as Cookie;
 pub use hyper::status::StatusCode as Status;
 
 use hyper::net::Fresh;
@@ -14,6 +14,8 @@ use hyper::server::Response as HttpResponse;
 
 use mime::{Mime, TopLevel, SubLevel, Attr, Value};
 
+use std::fmt::Debug;
+use std::borrow::Cow;
 use std::io::{Error, ErrorKind, Read, Result, Write};
 use std::fs::File;
 use std::path::Path;
@@ -99,22 +101,42 @@ impl<'a> Response<'a> {
         }
     }
 
-    /// Sets a cookie with the given name and value.
-    /// If set, the set_options function will be called to update the cookie's options.
-    pub fn cookie<F>(&mut self, name: &str, value: &str, set_options: Option<F>) where F: Fn(&mut Cookie) {
-        let mut cookie = Cookie::new(name.to_owned(), value.to_owned());
-        set_options.map(|f| f(&mut cookie));
-
-        if self.inner.headers().has::<SetCookie>() {
-            self.inner.headers_mut().get_mut::<SetCookie>().unwrap().push(cookie)
-        } else {
-            self.inner.headers_mut().set(SetCookie(vec![cookie]))
-        }
-    }
-
     /// Sets the status code of this response.
     pub fn status(&mut self, status: Status) -> &mut Self {
         *self.inner.status_mut() = status;
+        self
+    }
+
+    /// Sets the Content-Type header.
+    pub fn content_type<S: Into<Vec<u8>>>(&mut self, mime: S) -> &mut Self {
+        self.header_raw("Content-Type", mime)
+    }
+
+    /// Sets the Content-Length header.
+    pub fn len(&mut self, len: u64) -> &mut Self {
+        self.header(ContentLength(len))
+    }
+
+    /// Sets the Location header.
+    pub fn location<S: Into<String>>(&mut self, url: S) -> &mut Self {
+        self.header(Location(url.into()))
+    }
+
+    /// Redirects to the given URL with the given status, or 302 Found if none is given.
+    pub fn redirect(mut self, url: &'a str, status: Option<Status>) -> Result<()> {
+        self.location(url);
+        self.end(status.unwrap_or(Status::Found))
+    }
+
+    /// Sets the given header.
+    pub fn header<H: Header + HeaderFormat>(&mut self, header: H) -> &mut Self {
+        self.inner.headers_mut().set(header);
+        self
+    }
+
+    /// Sets the given header with raw strings.
+    pub fn header_raw<K: Into<Cow<'static, str>> + Debug, V: Into<Vec<u8>>>(&mut self, name: K, value: V) -> &mut Self {
+        self.inner.headers_mut().set_raw(name, vec![value.into()]);
         self
     }
 
@@ -158,8 +180,7 @@ impl<'a> Response<'a> {
             Ok(mut file) => {
                 let mut buf = Vec::with_capacity(file.metadata().ok().map_or(1024, |meta| meta.len() as usize));
                 if let Err(err) = file.read_to_end(&mut buf) {
-                    self.status(Status::InternalServerError);
-                    self.content_type("text/plain");
+                    self.status(Status::InternalServerError).content_type("text/plain");
                     self.send(format!("{}", err))
                 } else {
                     self.send(buf)
@@ -167,35 +188,10 @@ impl<'a> Response<'a> {
             },
             Err(ref err) if err.kind() == ErrorKind::NotFound => self.end(Status::NotFound),
             Err(ref err) => {
-                self.status(Status::InternalServerError);
-                self.content_type("text/plain");
+                self.status(Status::InternalServerError).content_type("text/plain");
                 self.send(format!("{}", err))
             }
         }
-    }
-
-    /// Sets the Content-Type header.
-    pub fn content_type<S: Into<Vec<u8>>>(&mut self, mime: S) -> &mut Self {
-        self.inner.headers_mut().set_raw("Content-Type", vec![mime.into()]);
-        self
-    }
-
-    /// Sets the Content-Length header.
-    pub fn len(&mut self, len: u64) -> &mut Self {
-        self.inner.headers_mut().set(ContentLength(len));
-        self
-    }
-
-    /// Sets the Location header.
-    pub fn location<S: Into<String>>(&mut self, url: S) -> &mut Self {
-        self.inner.headers_mut().set(Location(url.into()));
-        self
-    }
-
-    /// Redirects to the given URL with the given status, or 302 Found if none is given.
-    pub fn redirect(mut self, url: &'a str, status: Option<Status>) -> Result<()> {
-        self.location(url);
-        self.end(status.unwrap_or(Status::Found))
     }
 
     /// Writes the body of this response using the given source function.
@@ -203,6 +199,19 @@ impl<'a> Response<'a> {
         let mut streaming = try!(self.inner.start());
         try!(source(&mut streaming));
         streaming.end()
+    }
+
+    /// Sets a cookie with the given name and value.
+    /// If set, the set_options function will be called to update the cookie's options.
+    pub fn cookie<F>(&mut self, name: &str, value: &str, set_options: Option<F>) where F: Fn(&mut Cookie) {
+        let mut cookie = Cookie::new(name.to_owned(), value.to_owned());
+        set_options.map(|f| f(&mut cookie));
+
+        if self.inner.headers().has::<SetCookie>() {
+            self.inner.headers_mut().get_mut::<SetCookie>().unwrap().push(cookie)
+        } else {
+            self.inner.headers_mut().set(SetCookie(vec![cookie]))
+        }
     }
 }
 
