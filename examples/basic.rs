@@ -5,6 +5,9 @@ use edge::header::AccessControlAllowOrigin;
 use std::io::Result;
 use std::sync::Mutex;
 
+use std::collections::BTreeMap;
+use edge::value;
+
 struct MyApp {
     tmpl_path: String,
     counter: Mutex<u32>
@@ -36,8 +39,13 @@ impl MyApp {
     fn hello(&self,  req: &mut Request, mut res: Response) -> Result<()> {
         let first_name = req.params().find(|&&(ref k, _)| k == "first_name").map_or("John", |pair| &pair.1);
         let last_name = req.params().find(|&&(ref k, _)| k == "last_name").map_or("Doe", |pair| &pair.1);
+
+        let mut data = BTreeMap::new();
+        data.insert("first_name", value::to_value(first_name));
+        data.insert("last_name", value::to_value(last_name));
+
         res.content_type("text/plain");
-        res.send(format!("hello {} {}!", first_name, last_name))
+        res.render("views/hello.hbs", data)
     }
 
     fn settings(&self, req: &mut Request, mut res: Response) -> Result<()> {

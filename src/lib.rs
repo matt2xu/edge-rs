@@ -1,6 +1,9 @@
 extern crate hyper;
 extern crate url;
 extern crate mime;
+extern crate handlebars;
+extern crate serde;
+extern crate serde_json;
 
 pub use hyper::header as header;
 use header::{Cookie as CookieHeader, ContentLength, ContentType, Header, HeaderFormat, Location, SetCookie};
@@ -13,6 +16,11 @@ use hyper::server::Request as HttpRequest;
 use hyper::server::Response as HttpResponse;
 
 use mime::{Mime, TopLevel, SubLevel, Attr, Value};
+
+use handlebars::Handlebars;
+use serde::ser::Serialize as ToJson;
+
+pub use serde_json::value as value;
 
 use std::fmt::Debug;
 use std::borrow::Cow;
@@ -144,6 +152,13 @@ impl<'a> Response<'a> {
     pub fn end(mut self, status: Status) -> Result<()> {
         self.status(status);
         self.send([])
+    }
+
+    pub fn render<P: AsRef<Path>, T: ToJson>(self, path: P, data: T) -> Result<()> {
+        let mut handlebars = Handlebars::new();
+        let _result = handlebars.register_template_file("tmpl", path.as_ref());
+        let result = handlebars.render("tmpl", &data);
+        self.send(result.unwrap())
     }
 
     /// Sends the given content and ends this response.
