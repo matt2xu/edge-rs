@@ -28,16 +28,14 @@ impl MyApp {
         println!("in home, count = {}, path = {}", cnt, self.tmpl_path);
 
         // set length manually because we're streaming
-        res.set_status(Status::Ok);
-        res.set_len(80);
-        res.set_type("text/html");
+        res.status(Status::Ok).len(80).content_type("text/html");
         res.stream(|writer| writer.write("<html><head><title>home</title></head><body><h1>Hello, world!</h1></body></html>".as_bytes()))
     }
 
     fn hello(&self,  req: &mut Request, mut res: Response) -> Result<()> {
         let first_name = req.params().find(|&&(ref k, _)| k == "first_name").map_or("John", |pair| &pair.1);
         let last_name = req.params().find(|&&(ref k, _)| k == "last_name").map_or("Doe", |pair| &pair.1);
-        res.set_type("text/plain");
+        res.content_type("text/plain");
         res.send(format!("hello {} {}!", first_name, last_name))
     }
 
@@ -48,7 +46,7 @@ impl MyApp {
 
         //res.render(self.tmpl_path + "/sample.tpl", data)
 
-        res.set_type("text/html");
+        res.content_type("text/html");
         res.send("<html><head><title>Settings</title></head><body><h1>Settings</h1></body></html>")
     }
 
@@ -72,6 +70,10 @@ impl MyApp {
         res.send_file("web/".to_string() + &path)
     }
 
+    fn redirect(&self, _req: &mut Request, res: Response) -> Result<()> {
+        res.redirect("http://google.com", None)
+    }
+
 }
 
 fn main() {
@@ -81,6 +83,9 @@ fn main() {
     cter.get("/hello/:first_name/:last_name", MyApp::hello);
     cter.get("/settings", MyApp::settings);
     cter.get("/static", MyApp::files);
+
+    cter.get("/redirect", MyApp::redirect);
+
     cter.post("/login", MyApp::login);
     cter.start("0.0.0.0:3000").unwrap();
 }

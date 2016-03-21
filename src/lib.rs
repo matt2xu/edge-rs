@@ -3,7 +3,7 @@ extern crate url;
 extern crate mime;
 
 use hyper::header::Cookie as CookieHeader;
-use hyper::header::{ContentLength, ContentType, SetCookie};
+use hyper::header::{ContentLength, ContentType, Location, SetCookie};
 pub use hyper::header::CookiePair as Cookie;
 pub use hyper::status::StatusCode as Status;
 
@@ -112,9 +112,15 @@ impl<'a> Response<'a> {
         }
     }
 
+    /// Sets the status code of this response.
+    pub fn status(&mut self, status: Status) -> &mut Self {
+        *self.inner.status_mut() = status;
+        self
+    }
+
     /// Ends this response with the given status and an empty body
     pub fn end(mut self, status: Status) -> Result<()> {
-        self.set_status(status);
+        self.status(status);
         self.send([])
     }
 
@@ -152,7 +158,8 @@ impl<'a> Response<'a> {
             Ok(mut file) => {
                 let mut buf = Vec::with_capacity(file.metadata().ok().map_or(1024, |meta| meta.len() as usize));
                 if let Err(err) = file.read_to_end(&mut buf) {
-                    self.set_status(Status::InternalServerError);
+                    self.status(Status::InternalServerError);
+                    self.content_type("text/plain");
                     self.send(format!("{}", err))
                 } else {
                     self.send(buf)
@@ -160,25 +167,35 @@ impl<'a> Response<'a> {
             },
             Err(ref err) if err.kind() == ErrorKind::NotFound => self.end(Status::NotFound),
             Err(ref err) => {
-                self.set_status(Status::InternalServerError);
+                self.status(Status::InternalServerError);
+                self.content_type("text/plain");
                 self.send(format!("{}", err))
             }
         }
     }
 
-    /// Sets the Content-Length header.
-    pub fn set_len(&mut self, len: u64) {
-        self.inner.headers_mut().set(ContentLength(len))
-    }
-
-    /// Sets the status code of this response.
-    pub fn set_status(&mut self, status: Status) {
-        *self.inner.status_mut() = status
-    }
-
     /// Sets the Content-Type header.
-    pub fn set_type<S: Into<Vec<u8>>>(&mut self, mime: S) {
-        self.inner.headers_mut().set_raw("Content-Type", vec![mime.into()])
+    pub fn content_type<S: Into<Vec<u8>>>(&mut self, mime: S) -> &mut Self {
+        self.inner.headers_mut().set_raw("Content-Type", vec![mime.into()]);
+        self
+    }
+
+    /// Sets the Content-Length header.
+    pub fn len(&mut self, len: u64) -> &mut Self {
+        self.inner.headers_mut().set(ContentLength(len));
+        self
+    }
+
+    /// Sets the Location header.
+    pub fn location<S: Into<String>>(&mut self, url: S) -> &mut Self {
+        self.inner.headers_mut().set(Location(url.into()));
+        self
+    }
+
+    /// Redirects to the given URL with the given status, or 302 Found if none is given.
+    pub fn redirect(mut self, url: &'a str, status: Option<Status>) -> Result<()> {
+        self.location(url);
+        self.end(status.unwrap_or(Status::Found))
     }
 
     /// Writes the body of this response using the given source function.
@@ -345,20 +362,23 @@ impl<T: 'static + Send + Sync> Handler for Container<T> {
 
         // we do this so that req can be dropped (see Drop impl for Request)
         let (mut req, parse_result) = Request::new(req);
-        match parse_result {
+
+        let result = match parse_result {
             Err(parse_error) => {
-                res.set_status(Status::BadRequest);
-                res.send(format!("{}", parse_error)).unwrap();
+                res.status(Status::BadRequest);
+                res.content_type("text/plain");
+                res.send(format!("{}", parse_error))
             },
             Ok(()) => {
                 match self.find_callback(&req) {
-                    None => res.set_status(Status::NotFound),
+                    None => res.end(Status::NotFound),
                     Some((params, f)) => {
                         req.params = Some(params);
-                        f(&self.inner, &mut req, res).unwrap()
+                        f(&self.inner, &mut req, res)
                     }
                 }
             }
-        }
+        };
+        result.unwrap();
     }
 }
