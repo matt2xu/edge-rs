@@ -1,3 +1,69 @@
+//! Edge is a Web framework that aims to be simple to use, with the most common things you need out of the box.
+//! There are no plugins, the framework is not modular, but it is simple to use and easy to contribute to.
+//!
+//! The crate exports the things that you often need from dependencies, such as headers (from `hyper`),
+//! cookies (from `cookie`) and JSON serialization (from `serde_json`).
+//!
+//! *Warning*: this is a very early version, and the API is not fully stable yet.
+//!
+//! ## Overview
+//!
+//! In Edge you must define an *application structure* that contains the state of your application.
+//! You instantiate a container around this application, and associate GET/POST/... requests
+//! with given URLs to methods of your application. The container handles the routing and
+//! delegates calls to the appropriate methods.
+//!
+//! Note that the state cannot be mutated, as is usual in Rust (and enforced by the underlying HTTP server
+//! this crate uses, a.k.a. Hyper). Any shared mutable variable must be wrapped in a `Mutex`.
+//!
+//! ## Why another Web framework in Rust?
+//!
+//! Because I wanted a simple Web framework with:
+//!
+//!   1. everything I needed out of the box, like cookies and forms and templating, without having to dig up third-party crates,
+//!   1. the possibility to describe my application as a struct, so that callbacks could use a state (even if just for configuration).
+//!
+//! I hope you like this crate, if it misses something to fit your needs just open an issue or make a pull request!
+//!
+//! And please keep in mind that the framework is in a (very) early stage :-)
+//!
+//! ## Hello World
+//!
+//! ```no_run
+//! extern crate edge;
+//!
+//! use edge::{Container, Request, Response, Status};
+//! use edge::header::Server;
+//! use std::io::Result;
+//! use std::sync::Mutex;
+//!
+//! struct MyApp {
+//!     version: &'static str,
+//!     counter: Mutex<u32>
+//! }
+//!
+//! impl MyApp {
+//!     fn home(&self, _req: &mut Request, mut res: Response) -> Result<()> {
+//!         let cnt = {
+//!             let mut counter = self.counter.lock().unwrap();
+//!             *counter += 1;
+//!             *counter
+//!         };
+//!
+//!         res.status(Status::Ok).content_type("text/plain");
+//!         res.header(Server(format!("Edge version {}", self.version)));
+//!         res.send(format!("Hello, world! {} visits", cnt))
+//!     }
+//! }
+//!
+//! fn main() {
+//!     let app = MyApp { version: "0.1", counter: Mutex::new(0) };
+//!     let mut cter = Container::new(app);
+//!     cter.get("/", MyApp::home);
+//!     cter.start("0.0.0.0:3000").unwrap();
+//! }
+//! ```
+
 extern crate hyper;
 extern crate url;
 extern crate mime;
@@ -29,6 +95,9 @@ use std::fs::File;
 use std::path::Path;
 use std::ops::Drop;
 
+/// A request, with a path, query, and fragment (accessor methods not yet implemented for the last two).
+///
+/// Can be queried for the parameters that were matched by the router.
 pub struct Request<'a, 'b: 'a> {
     inner: HttpRequest<'a, 'b>,
     path: Vec<String>,
@@ -89,6 +158,7 @@ impl<'a, 'b> Request<'a, 'b> {
     }
 }
 
+/// Drop implementation to make sure the body of a request is discarded if nobody reads it.
 impl<'a, 'b> Drop for Request<'a, 'b> {
     fn drop(&mut self) {
         // read the request body in case the callback did not read it
@@ -241,6 +311,7 @@ enum Segment {
 }
 
 /// A route is an absolute URL pattern with a leading slash, and segments separated by slashes.
+///
 /// A segment that begins with a colon declares a variable, for example "/:user_id".
 #[derive(Debug)]
 pub struct Route {
