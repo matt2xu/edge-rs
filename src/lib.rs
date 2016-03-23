@@ -274,8 +274,8 @@ impl<'a> Response<'a> {
                     "htm" | "html" => Some(ContentType::html()),
                     "jpg" | "jpeg" => Some(ContentType::jpeg()),
                     "png" => Some(ContentType::png()),
-                    "js" => Some(ContentType(Mime(TopLevel::Application, SubLevel::Javascript, vec![(Attr::Charset, Value::Utf8)]))),
-                    "css" => Some(ContentType(Mime(TopLevel::Application, SubLevel::Css, vec![(Attr::Charset, Value::Utf8)]))),
+                    "js" => Some(ContentType(Mime(TopLevel::Text, SubLevel::Javascript, vec![(Attr::Charset, Value::Utf8)]))),
+                    "css" => Some(ContentType(Mime(TopLevel::Text, SubLevel::Css, vec![(Attr::Charset, Value::Utf8)]))),
                     _ => None
                 };
 
