@@ -91,7 +91,7 @@ pub use serde_json::value as value;
 use std::fmt::Debug;
 use std::borrow::Cow;
 use std::io::{Error, ErrorKind, Read, Result, Write};
-use std::fs::File;
+use std::fs::{File, read_dir};
 use std::path::Path;
 use std::ops::Drop;
 
@@ -156,6 +156,16 @@ impl<'a, 'b> Request<'a, 'b> {
     pub fn path(&self) -> &Vec<String> {
         &self.path
     }
+
+    /// Returns the query of this request (if any).
+    pub fn query(&self) -> &Option<String> {
+        &self.query
+    }
+
+    /// Returns the fragment of this request (if any).
+    pub fn fragment(&self) -> &Option<String> {
+        &self.fragment
+    }
 }
 
 /// Drop implementation to make sure the body of a request is discarded if nobody reads it.
@@ -170,6 +180,18 @@ impl<'a, 'b> Drop for Request<'a, 'b> {
 
 pub struct Response<'a> {
     inner: HttpResponse<'a>
+}
+
+fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
+    for it in try!(read_dir("views/partials")) {
+        let entry = try!(it);
+        let path = entry.path();
+        if path.extension().is_some() && path.extension().unwrap() == "hbs" {
+            let name = path.file_stem().unwrap().to_str().unwrap();
+            handlebars.register_template_file(name, path.as_path()).unwrap();
+        }
+    }
+    Ok(())
 }
 
 impl<'a> Response<'a> {
@@ -226,8 +248,12 @@ impl<'a> Response<'a> {
 
     pub fn render<P: AsRef<Path>, T: ToJson>(self, path: P, data: T) -> Result<()> {
         let mut handlebars = Handlebars::new();
-        let _result = handlebars.register_template_file("tmpl", path.as_ref());
-        let result = handlebars.render("tmpl", &data);
+        let path = path.as_ref();
+        let name = path.file_stem().unwrap().to_str().unwrap();
+
+        handlebars.register_template_file(name, path).unwrap();
+        try!(register_partials(&mut handlebars));
+        let result = handlebars.render(name, &data);
         self.send(result.unwrap())
     }
 
