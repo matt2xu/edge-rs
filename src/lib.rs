@@ -75,8 +75,12 @@ use header::{Cookie as CookieHeader, ContentLength, ContentType, Header, HeaderF
 pub use header::CookiePair as Cookie;
 pub use hyper::status::StatusCode as Status;
 
-use hyper::{Control, Decoder, Encoder, Next};
-use hyper::net::{HttpStream, Transport};
+use hyper::{Control, Decoder, Encoder, Next, Get, Post, Head, Delete};
+
+use hyper::method::Method::{Put};
+use hyper::uri::RequestUri::{AbsolutePath, Star};
+
+use hyper::net::HttpStream;
 use hyper::server::{Handler, HandlerFactory, Server};
 use hyper::server::Request as HttpRequest;
 use hyper::server::Response as HttpResponse;
@@ -109,16 +113,17 @@ pub struct Request {
 type Params = Vec<(String, String)>;
 
 impl Request {
-    fn new(inner: HttpRequest) -> (Request, url::ParseResult<()>) {
-        let ((path, query, fragment), parse_result) = match inner.uri() {
-            &hyper::uri::RequestUri::AbsolutePath(ref path) => match url::parse_path(path) {
-                Ok(res) => (res, Ok(())),
-                Err(e) => ((Vec::new(), None, None), Err(e))
+    fn new(inner: HttpRequest) -> url::ParseResult<Request> {
+        let (path, query, fragment) = match *inner.uri() {
+            AbsolutePath(ref path) => match url::parse_path(path) {
+                Ok(res) => res,
+                Err(e) => return Err(e)
             },
-            _ => ((vec!["*".to_owned()], None, None), Ok(()))
+            Star => (vec!["*".to_owned()], None, None),
+            _ => panic!("unsupported request URI")
         };
 
-        (Request {inner: inner, path: path, query: query, fragment: fragment, params: None}, parse_result)
+        Ok(Request {inner: inner, path: path, query: query, fragment: fragment, params: None})
     }
 
     /// Reads this request's body until the end, and returns it as a vector of bytes.
@@ -331,7 +336,7 @@ enum Segment {
 ///
 /// A segment that begins with a colon declares a variable, for example "/:user_id".
 #[derive(Debug)]
-pub struct Route {
+struct Route {
     segments: Vec<Segment>
 }
 
@@ -403,47 +408,47 @@ impl<'a> Into<Route> for &'a str {
     }
 }
 
-/// Container of an application.
-pub struct Container<T: Send> {
-    inner: T,
-    router_get: Router<T>,
-    router_post: Router<T>,
-    router_put: Router<T>,
-    router_delete: Router<T>,
-    router_head: Router<T>
+/// Structure for an Edge application.
+pub struct Edge<T: Send + Sync> {
+    container: Arc<Container<T>>
 }
 
-impl<T: 'static + Send> Container<T> {
+use std::sync::Arc;
 
-    pub fn new(ctrl: Control, inner: T) -> Container<T> {
-        Container {
-            inner: inner,
-            router_get: Router::new(),
-            router_post: Router::new(),
-            router_put: Router::new(),
-            router_delete: Router::new(),
-            router_head: Router::new()
+impl<T: 'static + Send + Sync> Edge<T> {
+
+    /// Creates an Edge application using the given inner structure.
+    pub fn new(inner: T) -> Edge<T> {
+        Edge {
+            container: Arc::new(Container {
+                inner: inner,
+                router_get: Router::new(),
+                router_post: Router::new(),
+                router_put: Router::new(),
+                router_delete: Router::new(),
+                router_head: Router::new()
+            })
         }
     }
 
-    pub fn get<S: Into<Route>>(&mut self, path: S, method: Callback<T>) {
-        self.router_get.insert(path.into(), method);
+    pub fn get(&mut self, path: &str, method: Callback<T>) {
+        self.container_mut().router_get.insert(path.into(), method);
     }
 
-    pub fn post<S: Into<Route>>(&mut self, path: S, method: Callback<T>) {
-        self.router_post.insert(path.into(), method);
+    pub fn post(&mut self, path: &str, method: Callback<T>) {
+        self.container_mut().router_post.insert(path.into(), method);
     }
 
-    pub fn put<S: Into<Route>>(&mut self, path: S, method: Callback<T>) {
-        self.router_put.insert(path.into(), method);
+    pub fn put(&mut self, path: &str, method: Callback<T>) {
+        self.container_mut().router_put.insert(path.into(), method);
     }
 
-    pub fn delete<S: Into<Route>>(&mut self, path: S, method: Callback<T>) {
-        self.router_delete.insert(path.into(), method);
+    pub fn delete(&mut self, path: &str, method: Callback<T>) {
+        self.container_mut().router_delete.insert(path.into(), method);
     }
 
-    pub fn head<S: Into<Route>>(&mut self, path: S, method: Callback<T>) {
-        self.router_head.insert(path.into(), method);
+    pub fn head(&mut self, path: &str, method: Callback<T>) {
+        self.container_mut().router_head.insert(path.into(), method);
     }
 
     pub fn start(self, addr: &str) -> Result<()> {
@@ -452,9 +457,24 @@ impl<T: 'static + Send> Container<T> {
         Ok(())
     }
 
-    fn find_callback(&self, req: &Request) -> Option<(Params, Callback<T>)> {
-        use hyper::method::Method::*;
+    fn container_mut(&mut self) -> &mut Container<T> {
+        Arc::get_mut(&mut self.container).unwrap()
+    }
 
+}
+
+/// Container of an application.
+struct Container<T: Send + Sync> {
+    inner: T,
+    router_get: Router<T>,
+    router_post: Router<T>,
+    router_put: Router<T>,
+    router_delete: Router<T>,
+    router_head: Router<T>
+}
+
+impl<T: 'static + Send + Sync> Container<T> {
+    fn find_callback(&self, req: &Request) -> Option<(Params, Callback<T>)> {
         let router = match req.inner.method() {
             &Get => &self.router_get,
             &Post => &self.router_post,
@@ -468,95 +488,92 @@ impl<T: 'static + Send> Container<T> {
     }
 }
 
-pub struct EdgeHandler<T: Send> {
-    inner: Option<Container<T>>,
-    request: Option<HttpRequest>,
+pub struct EdgeHandler<T: Send + Sync> {
+    inner: Arc<Container<T>>,
+    request: Option<Request>,
+    error: Option<String>,
+    callback: Option<Callback<T>>,
     ctrl: Control
 }
 
-impl<T: 'static + Send> HandlerFactory<HttpStream> for Container<T> {
+impl<T: 'static + Send + Sync> HandlerFactory<HttpStream> for Edge<T> {
     type Output = EdgeHandler<T>;
 
     fn create(&mut self, control: Control) -> EdgeHandler<T> {
         EdgeHandler {
-            inner: None,
+            inner: self.container.clone(),
             request: None,
+            error: None,
+            callback: None,
             ctrl: control
         }
     }
 }
 
-/// Implements Handler for our Container. Wraps the HTTP request/response in our own types.
-impl<T: 'static + Send> Handler<HttpStream> for EdgeHandler<T> {
+/// Implements Handler for our EdgeHandler.
+impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
     fn on_request(&mut self, req: HttpRequest) -> Next {
-        self.request = Some(req);
-        /*
-        self.callback = self.find_callback();
+        match Request::new(req) {
+            Ok(mut req) => {
+                if let Some((params, callback)) = self.inner.find_callback(&req) {
+                    req.params = Some(params);
+                    self.callback = Some(callback);
+                } else {
+                    println!("route not found for path {:?}", req.path());
+                }
 
-        if method == PUT/POST {
-            // need to read body (if any)
-            let content_length = 0;
-            return Next::read()
+                let need_reading = match *req.inner.method() { Put | Post => true, _ => false };
+                self.request = Some(req);
+                if need_reading {
+                    // need to read body (if any)
+                    return Next::read_and_write()
+                }
+            },
+            Err(e) => {
+                self.error = Some(format!("{}", e));
+            }
         }
 
         // if request other than PUT/POST or no body, write a response
         Next::write()
-        */
-        Next::read()
     }
 
     fn on_request_readable(&mut self, transport: &mut Decoder<HttpStream>) -> Next {
+        println!("on_request_readable");
+
         // TODO read request body here, repeatedly returning Next::read()
         // when finished with reading body, return Next::write()
         Next::write()
     }
 
     fn on_response(&mut self, res: &mut HttpResponse) -> Next {
-        /*
-        if let Some(callback) = self.callback {
+        println!("on_response");
+
+        if self.error.is_some() {
+            res.set_status(Status::BadRequest);
+            Next::write()
+        } else if let Some(callback) = self.callback {
             // invoke callback here to know what response to return
             // will set up headers, fill body, etc.
 
-            if self.body.is_some() {
-                Next::write()
-            } else {
-                Next::end()
-            }
+            // TODO callback(&self.inner, &mut req, res)
+
+            Next::write()
         } else {
-            // return 404 with no body
-            res.set_status(NotFound);
-            Next::end()
-        */
-        Next::write()
+            res.set_status(Status::NotFound);
+            self.error = Some("not found".to_owned());
+            Next::write()
+        }
     }
 
     fn on_response_writable(&mut self, transport: &mut Encoder<HttpStream>) -> Next {
-        // repeatedly write the body here
-        Next::end()
+        if let Some(ref error) = self.error {
+            transport.write(error.as_bytes()).unwrap();
+            Next::end()
+        } else {
+            // repeatedly write the body here with Next::write
+            // and when done, return Next::end
+            Next::end()
+        }
     }
-
-    /*fn handle(&self, req: HttpRequest, res: HttpResponse) {
-        let mut res = Response::new(res);
-
-        // we do this so that req can be dropped (see Drop impl for Request)
-        let (mut req, parse_result) = Request::new(req);
-
-        let result = match parse_result {
-            Err(parse_error) => {
-                res.status(Status::BadRequest);
-                res.content_type("text/plain");
-                res.send(format!("{}", parse_error))
-            },
-            Ok(()) => {
-                match self.find_callback(&req) {
-                    None => res.end(Status::NotFound),
-                    Some((params, f)) => {
-                        req.params = Some(params);
-                        f(&self.inner, &mut req, res)
-                    }
-                }
-            }
-        };
-        result.unwrap();
-    }*/
 }

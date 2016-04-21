@@ -1,6 +1,6 @@
 extern crate edge;
 
-use edge::{Container, Cookie, Request, Response, Status};
+use edge::{Edge, Cookie, Request, Response, Status};
 use edge::header::AccessControlAllowOrigin;
 use std::io::Result;
 use std::sync::Mutex;
@@ -87,7 +87,7 @@ impl MyApp {
 
 fn main() {
     let app = MyApp::new();
-    let mut cter = Container::new(app);
+    let mut cter = Edge::new(app);
     cter.get("/", MyApp::home);
     cter.get("/hello/:first_name/:last_name", MyApp::hello);
     cter.get("/settings", MyApp::settings);
