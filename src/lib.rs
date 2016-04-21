@@ -66,7 +66,6 @@
 
 extern crate hyper;
 extern crate url;
-extern crate mime;
 extern crate handlebars;
 extern crate serde;
 extern crate serde_json;
@@ -76,12 +75,13 @@ use header::{Cookie as CookieHeader, ContentLength, ContentType, Header, HeaderF
 pub use header::CookiePair as Cookie;
 pub use hyper::status::StatusCode as Status;
 
-use hyper::net::Fresh;
-use hyper::server::{Handler, Server};
+use hyper::{Control, Decoder, Encoder, Next};
+use hyper::net::{HttpStream, Transport};
+use hyper::server::{Handler, HandlerFactory, Server};
 use hyper::server::Request as HttpRequest;
 use hyper::server::Response as HttpResponse;
 
-use mime::{Mime, TopLevel, SubLevel, Attr, Value};
+use hyper::mime::{Mime, TopLevel, SubLevel, Attr, Value};
 
 use handlebars::Handlebars;
 use serde::ser::Serialize as ToJson;
@@ -93,13 +93,12 @@ use std::borrow::Cow;
 use std::io::{Error, ErrorKind, Read, Result, Write};
 use std::fs::{File, read_dir};
 use std::path::Path;
-use std::ops::Drop;
 
 /// A request, with a path, query, and fragment (accessor methods not yet implemented for the last two).
 ///
 /// Can be queried for the parameters that were matched by the router.
-pub struct Request<'a, 'b: 'a> {
-    inner: HttpRequest<'a, 'b>,
+pub struct Request {
+    inner: HttpRequest,
     path: Vec<String>,
     query: Option<String>,
     fragment: Option<String>,
@@ -109,10 +108,10 @@ pub struct Request<'a, 'b: 'a> {
 
 type Params = Vec<(String, String)>;
 
-impl<'a, 'b> Request<'a, 'b> {
-    fn new(inner: HttpRequest<'a, 'b>) -> (Request<'a, 'b>, url::ParseResult<()>) {
-        let ((path, query, fragment), parse_result) = match inner.uri {
-            hyper::uri::RequestUri::AbsolutePath(ref path) => match url::parse_path(path) {
+impl Request {
+    fn new(inner: HttpRequest) -> (Request, url::ParseResult<()>) {
+        let ((path, query, fragment), parse_result) = match inner.uri() {
+            &hyper::uri::RequestUri::AbsolutePath(ref path) => match url::parse_path(path) {
                 Ok(res) => (res, Ok(())),
                 Err(e) => ((Vec::new(), None, None), Err(e))
             },
@@ -125,13 +124,13 @@ impl<'a, 'b> Request<'a, 'b> {
     /// Reads this request's body until the end, and returns it as a vector of bytes.
     pub fn body(&mut self) -> Result<Vec<u8>> {
         let mut buf = Vec::new();
-        try!(self.inner.read_to_end(&mut buf));
+        // TODO try!(self.inner.read_to_end(&mut buf));
         Ok(buf)
     }
 
     /// Returns an iterator over the cookies of this request.
     pub fn cookies(&self) -> std::slice::Iter<Cookie> {
-        self.inner.headers.get::<CookieHeader>().map_or([].iter(),
+        self.inner.headers().get::<CookieHeader>().map_or([].iter(),
             |&CookieHeader(ref cookies)| cookies.iter()
         )
     }
@@ -139,7 +138,7 @@ impl<'a, 'b> Request<'a, 'b> {
     /// Reads the body of this request, parses it as an application/x-www-form-urlencoded format,
     /// and returns it as a vector of (name, value) pairs.
     pub fn form(&mut self) -> Result<Vec<(String, String)>> {
-        match self.inner.headers.get::<ContentType>() {
+        match self.inner.headers().get::<ContentType>() {
             Some(&ContentType(Mime(TopLevel::Application, SubLevel::WwwFormUrlEncoded, _))) =>
                 Ok(url::form_urlencoded::parse(&try!(self.body()))),
             Some(_) => Err(Error::new(ErrorKind::InvalidInput, "invalid Content-Type, expected application/x-www-form-urlencoded")),
@@ -168,16 +167,6 @@ impl<'a, 'b> Request<'a, 'b> {
     }
 }
 
-/// Drop implementation to make sure the body of a request is discarded if nobody reads it.
-impl<'a, 'b> Drop for Request<'a, 'b> {
-    fn drop(&mut self) {
-        // read the request body in case the callback did not read it
-        // avoids a weird bug where Hyper does not correctly parse the method
-        let mut buf = Vec::new();
-        self.inner.read_to_end(&mut buf).unwrap();
-    }
-}
-
 pub struct Response<'a> {
     inner: HttpResponse<'a>
 }
@@ -195,7 +184,7 @@ fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
 }
 
 impl<'a> Response<'a> {
-    fn new(inner: HttpResponse<'a>) -> Response<'a> {
+    fn new(inner: HttpResponse) -> Response {
         Response {
             inner: inner
         }
@@ -203,7 +192,7 @@ impl<'a> Response<'a> {
 
     /// Sets the status code of this response.
     pub fn status(&mut self, status: Status) -> &mut Self {
-        *self.inner.status_mut() = status;
+        self.inner.set_status(status);
         self
     }
 
@@ -223,7 +212,7 @@ impl<'a> Response<'a> {
     }
 
     /// Redirects to the given URL with the given status, or 302 Found if none is given.
-    pub fn redirect(mut self, url: &'a str, status: Option<Status>) -> Result<()> {
+    pub fn redirect(mut self, url: &str, status: Option<Status>) -> Result<()> {
         self.location(url);
         self.end(status.unwrap_or(Status::Found))
     }
@@ -260,7 +249,8 @@ impl<'a> Response<'a> {
     /// Sends the given content and ends this response.
     /// Status defaults to 200 Ok, headers must have been set before this method is called.
     pub fn send<D: AsRef<[u8]>>(self, content: D) -> Result<()> {
-        self.inner.send(content.as_ref())
+        // TODO self.inner.send(content.as_ref())
+        Ok(())
     }
 
     /// Sends the given file, setting the Content-Type based on the file's extension.
@@ -307,9 +297,10 @@ impl<'a> Response<'a> {
 
     /// Writes the body of this response using the given source function.
     pub fn stream<F, R>(self, source: F) -> Result<()> where F: FnOnce(&mut Write) -> Result<R> {
-        let mut streaming = try!(self.inner.start());
-        try!(source(&mut streaming));
-        streaming.end()
+        //let mut streaming = try!(self.inner.start());
+        //try!(source(&mut streaming));
+        //streaming.end()
+        Ok(())
     }
 
     /// Sets a cookie with the given name and value.
@@ -413,7 +404,7 @@ impl<'a> Into<Route> for &'a str {
 }
 
 /// Container of an application.
-pub struct Container<T: Send + Sync> {
+pub struct Container<T: Send> {
     inner: T,
     router_get: Router<T>,
     router_post: Router<T>,
@@ -422,9 +413,9 @@ pub struct Container<T: Send + Sync> {
     router_head: Router<T>
 }
 
-impl<T: 'static + Send + Sync> Container<T> {
+impl<T: 'static + Send> Container<T> {
 
-    pub fn new(inner: T) -> Container<T> {
+    pub fn new(ctrl: Control, inner: T) -> Container<T> {
         Container {
             inner: inner,
             router_get: Router::new(),
@@ -456,19 +447,20 @@ impl<T: 'static + Send + Sync> Container<T> {
     }
 
     pub fn start(self, addr: &str) -> Result<()> {
-        Server::http(addr).unwrap().handle(self).unwrap();
+        let server = Server::http(&addr.parse().unwrap()).unwrap();
+        server.handle(self);
         Ok(())
     }
 
-    fn find_callback<'a, 'k>(&'a self, req: &'a Request<'a, 'k>) -> Option<(Params, Callback<T>)> {
+    fn find_callback(&self, req: &Request) -> Option<(Params, Callback<T>)> {
         use hyper::method::Method::*;
 
-        let router = match req.inner.method {
-            Get => &self.router_get,
-            Post => &self.router_post,
-            Put => &self.router_put,
-            Delete => &self.router_delete,
-            Head => &self.router_head,
+        let router = match req.inner.method() {
+            &Get => &self.router_get,
+            &Post => &self.router_post,
+            &Put => &self.router_put,
+            &Delete => &self.router_delete,
+            &Head => &self.router_head,
             ref method => { println!("unexpected method: {}", method); return None }
         };
 
@@ -476,9 +468,74 @@ impl<T: 'static + Send + Sync> Container<T> {
     }
 }
 
+pub struct EdgeHandler<T: Send> {
+    inner: Option<Container<T>>,
+    request: Option<HttpRequest>,
+    ctrl: Control
+}
+
+impl<T: 'static + Send> HandlerFactory<HttpStream> for Container<T> {
+    type Output = EdgeHandler<T>;
+
+    fn create(&mut self, control: Control) -> EdgeHandler<T> {
+        EdgeHandler {
+            inner: None,
+            request: None,
+            ctrl: control
+        }
+    }
+}
+
 /// Implements Handler for our Container. Wraps the HTTP request/response in our own types.
-impl<T: 'static + Send + Sync> Handler for Container<T> {
-    fn handle<'a, 'k>(&'a self, req: HttpRequest<'a, 'k>, res: HttpResponse<'a, Fresh>) {
+impl<T: 'static + Send> Handler<HttpStream> for EdgeHandler<T> {
+    fn on_request(&mut self, req: HttpRequest) -> Next {
+        self.request = Some(req);
+        /*
+        self.callback = self.find_callback();
+
+        if method == PUT/POST {
+            // need to read body (if any)
+            let content_length = 0;
+            return Next::read()
+        }
+
+        // if request other than PUT/POST or no body, write a response
+        Next::write()
+        */
+        Next::read()
+    }
+
+    fn on_request_readable(&mut self, transport: &mut Decoder<HttpStream>) -> Next {
+        // TODO read request body here, repeatedly returning Next::read()
+        // when finished with reading body, return Next::write()
+        Next::write()
+    }
+
+    fn on_response(&mut self, res: &mut HttpResponse) -> Next {
+        /*
+        if let Some(callback) = self.callback {
+            // invoke callback here to know what response to return
+            // will set up headers, fill body, etc.
+
+            if self.body.is_some() {
+                Next::write()
+            } else {
+                Next::end()
+            }
+        } else {
+            // return 404 with no body
+            res.set_status(NotFound);
+            Next::end()
+        */
+        Next::write()
+    }
+
+    fn on_response_writable(&mut self, transport: &mut Encoder<HttpStream>) -> Next {
+        // repeatedly write the body here
+        Next::end()
+    }
+
+    /*fn handle(&self, req: HttpRequest, res: HttpResponse) {
         let mut res = Response::new(res);
 
         // we do this so that req can be dropped (see Drop impl for Request)
@@ -501,5 +558,5 @@ impl<T: 'static + Send + Sync> Handler for Container<T> {
             }
         };
         result.unwrap();
-    }
+    }*/
 }
