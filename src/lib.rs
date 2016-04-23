@@ -197,7 +197,6 @@ pub struct Response {
     resp: Resp,
     ctrl: Control,
     tx: mpsc::Sender<Resp>,
-    done: Arc<AtomicBool>,
     notify: Arc<AtomicBool>
 }
 
@@ -214,12 +213,11 @@ fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
 }
 
 impl Response {
-    fn new(ctrl: Control, tx: mpsc::Sender<Resp>, done: Arc<AtomicBool>, notify: Arc<AtomicBool>) -> Response {
+    fn new(ctrl: Control, tx: mpsc::Sender<Resp>, notify: Arc<AtomicBool>) -> Response {
         Response {
             resp: Resp::new(),
             ctrl: ctrl,
             tx: tx,
-            done: done,
             notify: notify
         }
     }
@@ -264,9 +262,7 @@ impl Response {
     }
 
     /// Writes this response by notifying the framework
-    fn write(mut self) {
-        self.done.store(true, Ordering::Relaxed);
-
+    fn write(self) {
         self.tx.send(self.resp).unwrap();
         if self.notify.load(Ordering::Relaxed) {
             self.ctrl.ready(Next::write()).unwrap();
@@ -559,8 +555,8 @@ pub struct EdgeHandler<T: Send + Sync> {
     request: Option<Request>,
     body: Buffer,
     response: Option<Response>,
+    resp: Option<Resp>,
     rx: mpsc::Receiver<Resp>,
-    done: Arc<AtomicBool>,
     notify: Arc<AtomicBool>
 }
 
@@ -568,7 +564,6 @@ impl<T: 'static + Send + Sync> HandlerFactory<HttpStream> for Edge<T> {
     type Output = EdgeHandler<T>;
 
     fn create(&mut self, control: Control) -> EdgeHandler<T> {
-        let done = Arc::new(AtomicBool::new(false));
         let notify = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
         EdgeHandler {
@@ -576,8 +571,8 @@ impl<T: 'static + Send + Sync> HandlerFactory<HttpStream> for Edge<T> {
             request: None,
             body: Buffer::new(),
             rx: rx,
-            response: Some(Response::new(control, tx, done.clone(), notify.clone())),
-            done: done,
+            response: Some(Response::new(control, tx, notify.clone())),
+            resp: None,
             notify: notify
         }
     }
@@ -592,21 +587,27 @@ impl<T: 'static + Send + Sync> EdgeHandler<T> {
             req.params = Some(params);
 
             callback(&self.inner.inner, req, res);
-
-            if self.done.load(Ordering::Relaxed) {
-                println!("response done, return Next::write after callback");
-                Next::write()
-            } else {
-                self.notify.store(true, Ordering::Relaxed);
-                println!("response not done, return Next::wait after callback");
-                Next::wait()
-            }
         } else {
             println!("route not found for path {:?}", req.path());
             res.status(Status::NotFound);
             res.content_type("text/plain");
             res.send(format!("not found: {:?}", req.path()));
-            Next::write()
+        }
+
+        match self.rx.try_recv() {
+            Ok(resp) => {
+                // try_recv only succeeds if response available
+                self.resp = Some(resp);
+                println!("response done, return Next::write after callback");
+                Next::write()
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                // otherwise we need to wait
+                self.notify.store(true, Ordering::Relaxed);
+                println!("response not done, return Next::wait after callback");
+                Next::wait()
+            }
+            Err(_) => panic!("channel unexpectedly disconnected")
         }
     }
 }
@@ -648,24 +649,19 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
     fn on_response(&mut self, res: &mut HttpResponse) -> Next {
         println!("on_response");
 
-        match self.rx.try_recv() {
-            Ok(resp) => {
-                let (status, headers, body) = resp.deconstruct();
-                res.set_status(status);
-                *res.headers_mut() = headers;
-                self.body = body;
+        // we got here from callback directly or Response notified the Control
+        // in first case, we have a resp, in second case we need to recv it
+        let resp = self.resp.take().unwrap_or_else(|| self.rx.recv().unwrap());
 
-                if self.body.done() {
-                    Next::end()
-                } else {
-                    Next::write()
-                }
-            }
-            Err(mpsc::TryRecvError::Empty) => {
-                println!("waiting");
-                Next::wait()
-            }
-            Err(_) => panic!("channel unexpectedly disconnected")
+        let (status, headers, body) = resp.deconstruct();
+        res.set_status(status);
+        *res.headers_mut() = headers;
+        self.body = body;
+
+        if self.body.done() {
+            Next::end()
+        } else {
+            Next::write()
         }
     }
 
