@@ -213,12 +213,12 @@ fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
 }
 
 impl Response {
-    fn new(ctrl: Control, tx: mpsc::Sender<Resp>, notify: Arc<AtomicBool>) -> Response {
+    fn new(ctrl: Control, tx: mpsc::Sender<Resp>) -> Response {
         Response {
             resp: Resp::new(),
             ctrl: ctrl,
             tx: tx,
-            notify: notify
+            notify: Arc::new(AtomicBool::new(false))
         }
     }
 
@@ -556,24 +556,21 @@ pub struct EdgeHandler<T: Send + Sync> {
     body: Buffer,
     response: Option<Response>,
     resp: Option<Resp>,
-    rx: mpsc::Receiver<Resp>,
-    notify: Arc<AtomicBool>
+    rx: mpsc::Receiver<Resp>
 }
 
 impl<T: 'static + Send + Sync> HandlerFactory<HttpStream> for Edge<T> {
     type Output = EdgeHandler<T>;
 
     fn create(&mut self, control: Control) -> EdgeHandler<T> {
-        let notify = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
         EdgeHandler {
             inner: self.container.clone(),
             request: None,
             body: Buffer::new(),
             rx: rx,
-            response: Some(Response::new(control, tx, notify.clone())),
-            resp: None,
-            notify: notify
+            response: Some(Response::new(control, tx)),
+            resp: None
         }
     }
 }
@@ -582,6 +579,7 @@ impl<T: 'static + Send + Sync> EdgeHandler<T> {
     fn callback(&mut self) -> Next {
         let req = &mut self.request.as_mut().unwrap();
         let mut res = self.response.take().unwrap();
+        let notify = res.notify.clone();
 
         if let Some((params, callback)) = self.inner.find_callback(req) {
             req.params = Some(params);
@@ -602,8 +600,8 @@ impl<T: 'static + Send + Sync> EdgeHandler<T> {
                 Next::write()
             }
             Err(mpsc::TryRecvError::Empty) => {
-                // otherwise we need to wait
-                self.notify.store(true, Ordering::Relaxed);
+                // otherwise we ask the Response to notify us, and wait
+                notify.store(true, Ordering::Relaxed);
                 println!("response not done, return Next::wait after callback");
                 Next::wait()
             }
