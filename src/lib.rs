@@ -95,8 +95,11 @@ use std::fmt::Debug;
 use std::borrow::Cow;
 use std::io::{Error, ErrorKind, Read, Result, Write};
 use std::fs::{File, read_dir};
-use std::sync::mpsc;
 use std::path::Path;
+
+use std::sync::Arc;
+use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A request, with a path, query, and fragment (accessor methods not yet implemented for the last two).
 ///
@@ -193,7 +196,9 @@ impl Resp {
 pub struct Response {
     resp: Resp,
     ctrl: Control,
-    tx: mpsc::Sender<Resp>
+    tx: mpsc::Sender<Resp>,
+    done: Arc<AtomicBool>,
+    notify: Arc<AtomicBool>
 }
 
 fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
@@ -209,11 +214,13 @@ fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
 }
 
 impl Response {
-    fn new(ctrl: Control, tx: mpsc::Sender<Resp>) -> Response {
+    fn new(ctrl: Control, tx: mpsc::Sender<Resp>, done: Arc<AtomicBool>, notify: Arc<AtomicBool>) -> Response {
         Response {
             resp: Resp::new(),
             ctrl: ctrl,
-            tx: tx
+            tx: tx,
+            done: done,
+            notify: notify
         }
     }
 
@@ -258,8 +265,12 @@ impl Response {
 
     /// Writes this response by notifying the framework
     fn write(mut self) {
+        self.done.store(true, Ordering::Relaxed);
+
         self.tx.send(self.resp).unwrap();
-        self.ctrl.ready(Next::write()).unwrap();
+        if self.notify.load(Ordering::Relaxed) {
+            self.ctrl.ready(Next::write()).unwrap();
+        }
     }
 
     /// Ends this response with the given status and an empty body
@@ -444,8 +455,6 @@ pub struct Edge<T: Send + Sync> {
     container: Arc<Container<T>>
 }
 
-use std::sync::Arc;
-
 impl<T: 'static + Send + Sync> Edge<T> {
 
     /// Creates an Edge application using the given inner structure.
@@ -524,8 +533,6 @@ struct Buffer {
     pos: usize
 }
 
-use std::default::Default;
-
 impl Buffer {
     fn new() -> Buffer {
         Buffer {
@@ -552,26 +559,32 @@ pub struct EdgeHandler<T: Send + Sync> {
     request: Option<Request>,
     body: Buffer,
     response: Option<Response>,
-    rx: mpsc::Receiver<Resp>
+    rx: mpsc::Receiver<Resp>,
+    done: Arc<AtomicBool>,
+    notify: Arc<AtomicBool>
 }
 
 impl<T: 'static + Send + Sync> HandlerFactory<HttpStream> for Edge<T> {
     type Output = EdgeHandler<T>;
 
     fn create(&mut self, control: Control) -> EdgeHandler<T> {
+        let done = Arc::new(AtomicBool::new(false));
+        let notify = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
         EdgeHandler {
             inner: self.container.clone(),
             request: None,
             body: Buffer::new(),
             rx: rx,
-            response: Some(Response::new(control, tx))
+            response: Some(Response::new(control, tx, done.clone(), notify.clone())),
+            done: done,
+            notify: notify
         }
     }
 }
 
 impl<T: 'static + Send + Sync> EdgeHandler<T> {
-    fn callback(&mut self) {
+    fn callback(&mut self) -> Next {
         let req = &mut self.request.as_mut().unwrap();
         let mut res = self.response.take().unwrap();
 
@@ -579,11 +592,21 @@ impl<T: 'static + Send + Sync> EdgeHandler<T> {
             req.params = Some(params);
 
             callback(&self.inner.inner, req, res);
+
+            if self.done.load(Ordering::Relaxed) {
+                println!("response done, return Next::write after callback");
+                Next::write()
+            } else {
+                self.notify.store(true, Ordering::Relaxed);
+                println!("response not done, return Next::wait after callback");
+                Next::wait()
+            }
         } else {
             println!("route not found for path {:?}", req.path());
             res.status(Status::NotFound);
             res.content_type("text/plain");
             res.send(format!("not found: {:?}", req.path()));
+            Next::write()
         }
     }
 }
@@ -595,15 +618,13 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
 
         match Request::new(req) {
             Ok(req) => {
-                let need_reading = match *req.inner.method() { Put | Post => true, _ => false };
                 self.request = Some(req);
-                if need_reading {
-                    // need to read body
-                    return Next::read()
-                } else {
-                    self.callback();
-                    println!("return Next::wait");
-                    Next::wait()
+                match *self.request.as_ref().unwrap().inner.method() {
+                    Put | Post => {
+                        // need to read body
+                        return Next::read()
+                    }
+                    _ => self.callback()
                 }
             },
             Err(error) => {
