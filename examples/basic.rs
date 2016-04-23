@@ -2,7 +2,6 @@ extern crate edge;
 
 use edge::{Edge, Cookie, Request, Response, Status};
 use edge::header::AccessControlAllowOrigin;
-use std::io::Result;
 use std::sync::Mutex;
 
 use std::collections::BTreeMap;
@@ -80,7 +79,14 @@ impl MyApp {
     }
 
     fn redirect(&self, _req: &mut Request, res: Response) {
-        res.redirect("http://google.com", None)
+        use std::thread;
+        use std::time::Duration;
+
+        thread::spawn(|| {
+            println!("waiting 3 seconds");
+            thread::sleep(Duration::from_secs(3));
+            res.redirect("http://google.com", None)
+        });
     }
 
 }

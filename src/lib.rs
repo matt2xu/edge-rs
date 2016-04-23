@@ -256,12 +256,17 @@ impl Response {
         self
     }
 
+    /// Writes this response by notifying the framework
+    fn write(mut self) {
+        self.tx.send(self.resp).unwrap();
+        self.ctrl.ready(Next::write()).unwrap();
+    }
+
     /// Ends this response with the given status and an empty body
     pub fn end(mut self, status: Status) {
         self.status(status);
         self.len(0);
-        self.tx.send(self.resp).unwrap();
-        self.ctrl.ready(Next::write()).unwrap();
+        self.write();
     }
 
     pub fn render<P: AsRef<Path>, T: ToJson>(self, path: P, data: T) {
@@ -281,8 +286,7 @@ impl Response {
         self.resp.body.send(content);
         let length = self.resp.body.len() as u64;
         self.len(length);
-        self.tx.send(self.resp).unwrap();
-        self.ctrl.ready(Next::write()).unwrap();
+        self.write();
     }
 
     /// Sends the given file, setting the Content-Type based on the file's extension.
@@ -516,28 +520,30 @@ impl<T: 'static + Send + Sync> Container<T> {
 }
 
 struct Buffer {
-    content: Option<Vec<u8>>,
+    content: Vec<u8>,
     pos: usize
 }
+
+use std::default::Default;
 
 impl Buffer {
     fn new() -> Buffer {
         Buffer {
-            content: None,
+            content: Vec::new(),
             pos: 0
         }
     }
 
-    fn len(&self) -> usize {
-        self.content.as_ref().unwrap().len()
-    }
+    fn done(&self) -> bool { self.pos >= self.len() }
+
+    fn len(&self) -> usize { self.content.len() }
 
     fn send<D: Into<Vec<u8>>>(&mut self, content: D) {
-        self.content = Some(content.into());
+        self.content = content.into();
     }
 
     fn write<W: Write>(&self, writer: &mut W) -> Result<usize> {
-        writer.write(&self.content.as_ref().unwrap()[self.pos..])
+        writer.write(&self.content[self.pos..])
     }
 }
 
@@ -585,15 +591,19 @@ impl<T: 'static + Send + Sync> EdgeHandler<T> {
 /// Implements Handler for our EdgeHandler.
 impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
     fn on_request(&mut self, req: HttpRequest) -> Next {
+        println!("on_request");
+
         match Request::new(req) {
             Ok(req) => {
                 let need_reading = match *req.inner.method() { Put | Post => true, _ => false };
                 self.request = Some(req);
                 if need_reading {
-                    // need to read body (if any)
-                    return Next::read_and_write()
+                    // need to read body
+                    return Next::read()
                 } else {
-                    self.callback()
+                    self.callback();
+                    println!("return Next::wait");
+                    Next::wait()
                 }
             },
             Err(error) => {
@@ -601,19 +611,17 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
                 res.status(Status::BadRequest);
                 res.content_type("text/plain");
                 res.send(error.to_string());
+                Next::write()
             }
         }
-
-        // if request other than PUT/POST or no body, write a response
-        Next::write()
     }
 
     fn on_request_readable(&mut self, transport: &mut Decoder<HttpStream>) -> Next {
         println!("on_request_readable");
 
         // TODO read request body here, repeatedly returning Next::read()
-        // when finished with reading body, callback and then return Next::write()
-        Next::write()
+        // when finished with reading body, callback and then return Next::wait()
+        Next::wait()
     }
 
     fn on_response(&mut self, res: &mut HttpResponse) -> Next {
@@ -626,7 +634,11 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
                 *res.headers_mut() = headers;
                 self.body = body;
 
-                Next::write()
+                if self.body.done() {
+                    Next::end()
+                } else {
+                    Next::write()
+                }
             }
             Err(mpsc::TryRecvError::Empty) => {
                 println!("waiting");
@@ -639,14 +651,22 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
     fn on_response_writable(&mut self, transport: &mut Encoder<HttpStream>) -> Next {
         println!("on_response_writable");
 
-        if self.body.pos < self.body.len() {
+        if self.body.done() {
+            // done writing the buffer
+            println!("done writing");
+            Next::end()
+        } else {
             // repeatedly write the body here with Next::write
             match self.body.write(transport) {
                 Ok(0) => panic!("wrote 0 bytes"),
                 Ok(n) => {
                     println!("wrote {} bytes", n);
                     self.body.pos += n;
-                    Next::write()
+                    if self.body.done() {
+                        Next::end()
+                    } else {
+                        Next::write()
+                    }
                 }
                 Err(e) => match e.kind() {
                     std::io::ErrorKind::WouldBlock => Next::write(),
@@ -656,10 +676,6 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
                     }
                 }
             }
-        } else {
-            // done writing the buffer
-            println!("done writing");
-            Next::end()
         }
     }
 }
