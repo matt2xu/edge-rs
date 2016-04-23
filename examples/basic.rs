@@ -22,7 +22,7 @@ impl MyApp {
         }
     }
 
-    fn home(&self, _req: &mut Request, res: &mut Response) -> Result<()> {
+    fn home(&self, _req: &mut Request, mut res: Response) {
         let cnt = {
             let mut counter = self.counter.lock().unwrap();
             *counter += 1;
@@ -36,7 +36,7 @@ impl MyApp {
         res.send("<html><head><title>home</title></head><body><h1>Hello, world!</h1></body></html>")
     }
 
-    fn hello(&self,  req: &mut Request, res: &mut Response) -> Result<()> {
+    fn hello(&self,  req: &mut Request, mut res: Response) {
         let first_name = req.params().find(|&&(ref k, _)| k == "first_name").map_or("John", |pair| &pair.1);
         let last_name = req.params().find(|&&(ref k, _)| k == "last_name").map_or("Doe", |pair| &pair.1);
 
@@ -48,7 +48,7 @@ impl MyApp {
         res.render("views/hello.hbs", data)
     }
 
-    fn settings(&self, req: &mut Request, res: &mut Response) -> Result<()> {
+    fn settings(&self, req: &mut Request, mut res: Response) {
         let mut cookies = req.cookies();
         println!("name cookie: {}", cookies.find(|cookie| cookie.name == "name")
             .map_or("nope", |cookie| &cookie.value));
@@ -59,8 +59,8 @@ impl MyApp {
         res.send("<html><head><title>Settings</title></head><body><h1>Settings</h1></body></html>")
     }
 
-    fn login(&self, req: &mut Request, res: &mut Response) -> Result<()> {
-        let form = try!(req.form());
+    fn login(&self, req: &mut Request, mut res: Response) {
+        let form = req.form().unwrap();
         match form.iter().find(|pair| pair.0 == "username").map(|pair| &pair.1) {
             None => (),
             Some(ref username) => {
@@ -74,12 +74,12 @@ impl MyApp {
         res.end(Status::NoContent)
     }
 
-    fn files(&self, req: &mut Request, res: &mut Response) -> Result<()> {
+    fn files(&self, req: &mut Request, res: Response) {
         let path = req.path()[1..].join("/");
         res.send_file("web/".to_string() + &path)
     }
 
-    fn redirect(&self, _req: &mut Request, res: &mut Response) -> Result<()> {
+    fn redirect(&self, _req: &mut Request, res: Response) {
         res.redirect("http://google.com", None)
     }
 

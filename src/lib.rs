@@ -95,6 +95,7 @@ use std::fmt::Debug;
 use std::borrow::Cow;
 use std::io::{Error, ErrorKind, Read, Result, Write};
 use std::fs::{File, read_dir};
+use std::sync::mpsc;
 use std::path::Path;
 
 /// A request, with a path, query, and fragment (accessor methods not yet implemented for the last two).
@@ -171,9 +172,28 @@ impl Request {
     }
 }
 
-pub struct Response<'a, 'b: 'a> {
-    inner: &'a mut HttpResponse<'b>,
-    buffer: &'a mut Buffer
+struct Resp {
+    status: Status,
+    headers: hyper::Headers,
+    body: Buffer
+}
+
+impl Resp {
+    fn new() -> Resp {
+        Resp {
+            status: Status::default(),
+            body: Buffer::new(),
+            headers: hyper::Headers::default()
+        }
+    }
+
+    fn deconstruct(self) -> (Status, hyper::Headers, Buffer) { (self.status, self.headers, self.body) }
+}
+
+pub struct Response {
+    resp: Resp,
+    ctrl: Control,
+    tx: mpsc::Sender<Resp>
 }
 
 fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
@@ -188,17 +208,18 @@ fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
     Ok(())
 }
 
-impl<'a, 'b> Response<'a, 'b> {
-    fn new(inner: &'a mut HttpResponse<'b>, buffer: &'a mut Buffer) -> Response<'a, 'b> {
+impl Response {
+    fn new(ctrl: Control, tx: mpsc::Sender<Resp>) -> Response {
         Response {
-            inner: inner,
-            buffer: buffer
+            resp: Resp::new(),
+            ctrl: ctrl,
+            tx: tx
         }
     }
 
     /// Sets the status code of this response.
     pub fn status(&mut self, status: Status) -> &mut Self {
-        self.inner.set_status(status);
+        self.resp.status = status;
         self
     }
 
@@ -218,55 +239,57 @@ impl<'a, 'b> Response<'a, 'b> {
     }
 
     /// Redirects to the given URL with the given status, or 302 Found if none is given.
-    pub fn redirect(&mut self, url: &str, status: Option<Status>) -> Result<()> {
+    pub fn redirect(mut self, url: &str, status: Option<Status>) {
         self.location(url);
         self.end(status.unwrap_or(Status::Found))
     }
 
     /// Sets the given header.
     pub fn header<H: Header + HeaderFormat>(&mut self, header: H) -> &mut Self {
-        self.inner.headers_mut().set(header);
+        self.resp.headers.set(header);
         self
     }
 
     /// Sets the given header with raw strings.
     pub fn header_raw<K: Into<Cow<'static, str>> + Debug, V: Into<Vec<u8>>>(&mut self, name: K, value: V) -> &mut Self {
-        self.inner.headers_mut().set_raw(name, vec![value.into()]);
+        self.resp.headers.set_raw(name, vec![value.into()]);
         self
     }
 
     /// Ends this response with the given status and an empty body
-    pub fn end(&mut self, status: Status) -> Result<()> {
+    pub fn end(mut self, status: Status) {
         self.status(status);
         self.len(0);
-        Ok(())
+        self.tx.send(self.resp).unwrap();
+        self.ctrl.ready(Next::write()).unwrap();
     }
 
-    pub fn render<P: AsRef<Path>, T: ToJson>(&mut self, path: P, data: T) -> Result<()> {
+    pub fn render<P: AsRef<Path>, T: ToJson>(self, path: P, data: T) {
         let mut handlebars = Handlebars::new();
         let path = path.as_ref();
         let name = path.file_stem().unwrap().to_str().unwrap();
 
         handlebars.register_template_file(name, path).unwrap();
-        try!(register_partials(&mut handlebars));
+        register_partials(&mut handlebars).unwrap();
         let result = handlebars.render(name, &data);
         self.send(result.unwrap())
     }
 
     /// Sends the given content and ends this response.
     /// Status defaults to 200 Ok, headers must have been set before this method is called.
-    pub fn send<D: Into<Vec<u8>>>(&mut self, content: D) -> Result<()> {
-        self.buffer.send(content);
-        let length = self.buffer.len() as u64;
+    pub fn send<D: Into<Vec<u8>>>(mut self, content: D) {
+        self.resp.body.send(content);
+        let length = self.resp.body.len() as u64;
         self.len(length);
-        Ok(())
+        self.tx.send(self.resp).unwrap();
+        self.ctrl.ready(Next::write()).unwrap();
     }
 
     /// Sends the given file, setting the Content-Type based on the file's extension.
     /// Known extensions are htm, html, jpg, jpeg, png, js, css.
     /// If the file does not exist, this method sends a 404 Not Found response.
-    pub fn send_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        if !self.inner.headers().has::<ContentType>() {
+    pub fn send_file<P: AsRef<Path>>(mut self, path: P) {
+        if !self.resp.headers.has::<ContentType>() {
             let extension = path.as_ref().extension();
             if let Some(ext) = extension {
                 let content_type = match ext.to_string_lossy().as_ref() {
@@ -279,7 +302,7 @@ impl<'a, 'b> Response<'a, 'b> {
                 };
 
                 if let Some(content_type) = content_type {
-                    self.inner.headers_mut().set(content_type);
+                    self.resp.headers.set(content_type);
                 }
             }
         }
@@ -318,16 +341,16 @@ impl<'a, 'b> Response<'a, 'b> {
         let mut cookie = Cookie::new(name.to_owned(), value.to_owned());
         set_options.map(|f| f(&mut cookie));
 
-        if self.inner.headers().has::<SetCookie>() {
-            self.inner.headers_mut().get_mut::<SetCookie>().unwrap().push(cookie)
+        if self.resp.headers.has::<SetCookie>() {
+            self.resp.headers.get_mut::<SetCookie>().unwrap().push(cookie)
         } else {
-            self.inner.headers_mut().set(SetCookie(vec![cookie]))
+            self.resp.headers.set(SetCookie(vec![cookie]))
         }
     }
 }
 
 /// Signature for a callback method
-pub type Callback<T> = fn(&T, &mut Request, &mut Response) -> Result<()>;
+pub type Callback<T> = fn(&T, &mut Request, Response);
 
 /// A segment is either a fixed string, or a variable with a name
 #[derive(Debug, Clone)]
@@ -521,28 +544,40 @@ impl Buffer {
 pub struct EdgeHandler<T: Send + Sync> {
     inner: Arc<Container<T>>,
     request: Option<Request>,
-    error: Option<String>,
-
-    /// used for response
     body: Buffer,
-
-    callback: Option<Callback<T>>,
-    ctrl: Control
+    response: Option<Response>,
+    rx: mpsc::Receiver<Resp>
 }
 
 impl<T: 'static + Send + Sync> HandlerFactory<HttpStream> for Edge<T> {
     type Output = EdgeHandler<T>;
 
     fn create(&mut self, control: Control) -> EdgeHandler<T> {
+        let (tx, rx) = mpsc::channel();
         EdgeHandler {
             inner: self.container.clone(),
             request: None,
-            error: None,
-
             body: Buffer::new(),
+            rx: rx,
+            response: Some(Response::new(control, tx))
+        }
+    }
+}
 
-            callback: None,
-            ctrl: control
+impl<T: 'static + Send + Sync> EdgeHandler<T> {
+    fn callback(&mut self) {
+        let req = &mut self.request.as_mut().unwrap();
+        let mut res = self.response.take().unwrap();
+
+        if let Some((params, callback)) = self.inner.find_callback(req) {
+            req.params = Some(params);
+
+            callback(&self.inner.inner, req, res);
+        } else {
+            println!("route not found for path {:?}", req.path());
+            res.status(Status::NotFound);
+            res.content_type("text/plain");
+            res.send(format!("not found: {:?}", req.path()));
         }
     }
 }
@@ -551,23 +586,21 @@ impl<T: 'static + Send + Sync> HandlerFactory<HttpStream> for Edge<T> {
 impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
     fn on_request(&mut self, req: HttpRequest) -> Next {
         match Request::new(req) {
-            Ok(mut req) => {
-                if let Some((params, callback)) = self.inner.find_callback(&req) {
-                    req.params = Some(params);
-                    self.callback = Some(callback);
-                } else {
-                    println!("route not found for path {:?}", req.path());
-                }
-
+            Ok(req) => {
                 let need_reading = match *req.inner.method() { Put | Post => true, _ => false };
                 self.request = Some(req);
                 if need_reading {
                     // need to read body (if any)
                     return Next::read_and_write()
+                } else {
+                    self.callback()
                 }
             },
-            Err(e) => {
-                self.error = Some(format!("{}", e));
+            Err(error) => {
+                let mut res = self.response.take().unwrap();
+                res.status(Status::BadRequest);
+                res.content_type("text/plain");
+                res.send(error.to_string());
             }
         }
 
@@ -579,38 +612,39 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
         println!("on_request_readable");
 
         // TODO read request body here, repeatedly returning Next::read()
-        // when finished with reading body, return Next::write()
+        // when finished with reading body, callback and then return Next::write()
         Next::write()
     }
 
     fn on_response(&mut self, res: &mut HttpResponse) -> Next {
         println!("on_response");
 
-        if let Some(callback) = self.callback {
-            let mut res = Response::new(res, &mut self.body);
-            if let Err(e) = callback(&self.inner.inner, self.request.as_mut().unwrap(), &mut res) {
-                self.error = Some(e.to_string());
-            }
+        match self.rx.try_recv() {
+            Ok(resp) => {
+                let (status, headers, body) = resp.deconstruct();
+                res.set_status(status);
+                *res.headers_mut() = headers;
+                self.body = body;
 
-            Next::write()
-        } else {
-            let (status, content) = if let Some(ref error) = self.error {
-                    (Status::BadRequest, error.to_string())
-                } else {
-                    (Status::NotFound, "not found".to_string())
-                };
-            res.set_status(status);
-            self.body.send(content);
-            Next::write()
+                Next::write()
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                println!("waiting");
+                Next::wait()
+            }
+            Err(_) => panic!("channel unexpectedly disconnected")
         }
     }
 
     fn on_response_writable(&mut self, transport: &mut Encoder<HttpStream>) -> Next {
+        println!("on_response_writable");
+
         if self.body.pos < self.body.len() {
             // repeatedly write the body here with Next::write
             match self.body.write(transport) {
                 Ok(0) => panic!("wrote 0 bytes"),
                 Ok(n) => {
+                    println!("wrote {} bytes", n);
                     self.body.pos += n;
                     Next::write()
                 }
@@ -624,6 +658,7 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
             }
         } else {
             // done writing the buffer
+            println!("done writing");
             Next::end()
         }
     }
