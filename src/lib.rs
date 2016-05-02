@@ -110,7 +110,8 @@ pub struct Request {
     query: Option<String>,
     fragment: Option<String>,
 
-    params: Option<Params>
+    params: Option<Params>,
+    body: Option<Buffer>
 }
 
 type Params = Vec<(String, String)>;
@@ -126,14 +127,21 @@ impl Request {
             _ => panic!("unsupported request URI")
         };
 
-        Ok(Request {inner: inner, path: path, query: query, fragment: fragment, params: None})
+        Ok(Request {
+            inner: inner,
+            path: path,
+            query: query,
+            fragment: fragment,
+            params: None,
+            body: None})
     }
 
     /// Reads this request's body until the end, and returns it as a vector of bytes.
-    pub fn body(&mut self) -> Result<Vec<u8>> {
-        let mut buf = Vec::new();
-        // TODO try!(self.inner.read_to_end(&mut buf));
-        Ok(buf)
+    pub fn body(&self) -> Result<&[u8]> {
+        match self.body {
+            Some(ref buffer) => Ok(&buffer.content),
+            None => Err(Error::new(ErrorKind::UnexpectedEof, "empty body"))
+        }
     }
 
     /// Returns an iterator over the cookies of this request.
@@ -146,9 +154,11 @@ impl Request {
     /// Reads the body of this request, parses it as an application/x-www-form-urlencoded format,
     /// and returns it as a vector of (name, value) pairs.
     pub fn form(&mut self) -> Result<Vec<(String, String)>> {
+        let body = try!(self.body());
+
         match self.inner.headers().get::<ContentType>() {
             Some(&ContentType(Mime(TopLevel::Application, SubLevel::WwwFormUrlEncoded, _))) =>
-                Ok(url::form_urlencoded::parse(&try!(self.body()))),
+                Ok(url::form_urlencoded::parse(body)),
             Some(_) => Err(Error::new(ErrorKind::InvalidInput, "invalid Content-Type, expected application/x-www-form-urlencoded")),
             None => Err(Error::new(ErrorKind::InvalidInput, "missing Content-Type header"))
         }
@@ -526,20 +536,55 @@ impl<T: 'static + Send + Sync> Container<T> {
 
 struct Buffer {
     content: Vec<u8>,
-    pos: usize
+    pos: usize,
+    max: Option<usize>
 }
 
 impl Buffer {
     fn new() -> Buffer {
         Buffer {
             content: Vec::new(),
-            pos: 0
+            pos: 0,
+            max: None
+        }
+    }
+
+    fn with_capacity(capacity: usize) -> Buffer {
+        Buffer {
+            content: Vec::with_capacity(capacity),
+            pos: 0,
+            max: Some(capacity)
         }
     }
 
     fn done(&self) -> bool { self.pos >= self.len() }
 
     fn len(&self) -> usize { self.content.len() }
+
+    fn read<R: Read>(&mut self, reader: &mut R) -> Next {
+        match reader.read(&mut self.content[self.pos..]) {
+            Ok(0) => {
+                println!("Read 0, eof");
+                Next::write()
+            }
+            Ok(n) => {
+                println!("read {} bytes", n);
+                self.pos += n;
+                if self.done() {
+                    Next::write()
+                } else {
+                    Next::read()
+                }
+            }
+            Err(e) => match e.kind() {
+                ErrorKind::WouldBlock => Next::read(),
+                _ => {
+                    println!("read error {:?}", e);
+                    Next::end()
+                }
+            }
+        }
+    }
 
     fn send<D: Into<Vec<u8>>>(&mut self, content: D) {
         self.content = content.into();
@@ -616,14 +661,21 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
         println!("on_request");
 
         match Request::new(req) {
-            Ok(req) => {
-                self.request = Some(req);
-                match *self.request.as_ref().unwrap().inner.method() {
+            Ok(mut req) => {
+                match *req.inner.method() {
                     Put | Post => {
                         // need to read body
-                        return Next::read()
+                        req.body = Some(match req.inner.headers().get::<ContentLength>() {
+                            Some(&ContentLength(len)) => Buffer::with_capacity(len as usize),
+                            None => Buffer::new()
+                        });
+                        self.request = Some(req);
+                        Next::read()
                     }
-                    _ => self.callback()
+                    _ => {
+                        self.request = Some(req);
+                        self.callback()
+                    }
                 }
             },
             Err(error) => {
@@ -639,9 +691,12 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
     fn on_request_readable(&mut self, transport: &mut Decoder<HttpStream>) -> Next {
         println!("on_request_readable");
 
-        // TODO read request body here, repeatedly returning Next::read()
-        // when finished with reading body, callback and then return Next::wait()
-        Next::wait()
+        if let Some(ref mut req) = self.request {
+            if let Some(ref mut body) = req.body {
+                return body.read(transport)
+            }
+        }
+        Next::write()
     }
 
     fn on_response(&mut self, res: &mut HttpResponse) -> Next {
@@ -684,7 +739,7 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
                     }
                 }
                 Err(e) => match e.kind() {
-                    std::io::ErrorKind::WouldBlock => Next::write(),
+                    ErrorKind::WouldBlock => Next::write(),
                     _ => {
                         println!("write error {:?}", e);
                         Next::end()
