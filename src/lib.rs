@@ -537,50 +537,82 @@ impl<T: 'static + Send + Sync> Container<T> {
 struct Buffer {
     content: Vec<u8>,
     pos: usize,
-    max: Option<usize>
+
+    /// growable is either None when reading a fixed buffer (Content-Length known in advance)
+    /// or it is Some(size) where size is the current write size by which the buffer should be grown
+    /// every time it is full
+    growable: Option<usize>
 }
+
+const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 
 impl Buffer {
     fn new() -> Buffer {
         Buffer {
             content: Vec::new(),
             pos: 0,
-            max: None
+            growable: Some(16)
         }
     }
 
     fn with_capacity(capacity: usize) -> Buffer {
+        println!("creating buffer with capacity {}", capacity);
         Buffer {
-            content: Vec::with_capacity(capacity),
+            content: vec![0; capacity],
             pos: 0,
-            max: Some(capacity)
+            growable: None
         }
     }
 
-    fn done(&self) -> bool { self.pos >= self.len() }
+    /// used when writing to check whether the buffer still has data
+    fn is_empty(&self) -> bool { self.pos == self.len() }
 
+    /// used when reading to check whether the buffer can still hold data
+    fn is_full(&self) -> bool { self.pos == self.len() }
+
+    /// returns the length of this buffer's content
     fn len(&self) -> usize { self.content.len() }
 
-    fn read<R: Read>(&mut self, reader: &mut R) -> Next {
+    /// read from the given reader into this buffer
+    fn read<R: Read>(&mut self, reader: &mut R) -> Option<Next> {
+        if let Some(mut write_size) = self.growable {
+            // if buffer is growable, check whether it is full
+            if self.is_full() {
+                let len = self.len();
+                // if buffer is full, extend it
+                // reused Read::read_to_end algorithm
+                if write_size < DEFAULT_BUF_SIZE {
+                    write_size *= 2;
+                    self.growable = Some(write_size);
+                }
+                self.content.resize(len + write_size, 0);
+            }
+        }
+
         match reader.read(&mut self.content[self.pos..]) {
             Ok(0) => {
-                println!("Read 0, eof");
-                Next::write()
+                // note: EOF is supposed to happen only when reading a growable buffer
+                if self.growable.is_some() {
+                    // we truncate the buffer so it has the proper size
+                    self.content.truncate(self.pos);
+                }
+                None
             }
             Ok(n) => {
-                println!("read {} bytes", n);
                 self.pos += n;
-                if self.done() {
-                    Next::write()
+                if self.growable.is_none() && self.is_full() {
+                    // fixed size full buffer, nothing to read anymore
+                    None
                 } else {
-                    Next::read()
+                    // fixed size buffer not full, or growable buffer
+                    Some(Next::read())
                 }
             }
             Err(e) => match e.kind() {
-                ErrorKind::WouldBlock => Next::read(),
+                ErrorKind::WouldBlock => Some(Next::read()),
                 _ => {
                     println!("read error {:?}", e);
-                    Next::end()
+                    Some(Next::end())
                 }
             }
         }
@@ -590,15 +622,35 @@ impl Buffer {
         self.content = content.into();
     }
 
-    fn write<W: Write>(&self, writer: &mut W) -> Result<usize> {
-        writer.write(&self.content[self.pos..])
+    /// writes from this buffer into the given writer
+    fn write<W: Write>(&mut self, writer: &mut W) -> Next {
+        match writer.write(&self.content[self.pos..]) {
+            Ok(0) => panic!("wrote 0 bytes"),
+            Ok(n) => {
+                println!("wrote {} bytes", n);
+                self.pos += n;
+                if self.is_empty() {
+                    // done reading
+                    Next::end()
+                } else {
+                    Next::write()
+                }
+            }
+            Err(e) => match e.kind() {
+                ErrorKind::WouldBlock => Next::write(),
+                _ => {
+                    println!("write error {:?}", e);
+                    Next::end()
+                }
+            }
+        }
     }
 }
 
 pub struct EdgeHandler<T: Send + Sync> {
     inner: Arc<Container<T>>,
     request: Option<Request>,
-    body: Buffer,
+    body: Option<Buffer>,
     response: Option<Response>,
     resp: Option<Resp>,
     rx: mpsc::Receiver<Resp>
@@ -612,7 +664,7 @@ impl<T: 'static + Send + Sync> HandlerFactory<HttpStream> for Edge<T> {
         EdgeHandler {
             inner: self.container.clone(),
             request: None,
-            body: Buffer::new(),
+            body: None,
             rx: rx,
             response: Some(Response::new(control, tx)),
             resp: None
@@ -691,12 +743,16 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
     fn on_request_readable(&mut self, transport: &mut Decoder<HttpStream>) -> Next {
         println!("on_request_readable");
 
-        if let Some(ref mut req) = self.request {
-            if let Some(ref mut body) = req.body {
-                return body.read(transport)
+        // we can only get here if self.request = Some(...), or there is a bug
+        {
+            let req = self.request.as_mut().unwrap();
+            let body = req.body.as_mut().unwrap();
+            if let Some(res) = body.read(transport) {
+                return res
             }
         }
-        Next::write()
+
+        self.callback()
     }
 
     fn on_response(&mut self, res: &mut HttpResponse) -> Next {
@@ -709,11 +765,11 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
         let (status, headers, body) = resp.deconstruct();
         res.set_status(status);
         *res.headers_mut() = headers;
-        self.body = body;
 
-        if self.body.done() {
+        if body.is_empty() {
             Next::end()
         } else {
+            self.body = Some(body);
             Next::write()
         }
     }
@@ -721,31 +777,14 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
     fn on_response_writable(&mut self, transport: &mut Encoder<HttpStream>) -> Next {
         println!("on_response_writable");
 
-        if self.body.done() {
+        let body = self.body.as_mut().unwrap();
+        if body.is_empty() {
             // done writing the buffer
             println!("done writing");
             Next::end()
         } else {
             // repeatedly write the body here with Next::write
-            match self.body.write(transport) {
-                Ok(0) => panic!("wrote 0 bytes"),
-                Ok(n) => {
-                    println!("wrote {} bytes", n);
-                    self.body.pos += n;
-                    if self.body.done() {
-                        Next::end()
-                    } else {
-                        Next::write()
-                    }
-                }
-                Err(e) => match e.kind() {
-                    ErrorKind::WouldBlock => Next::write(),
-                    _ => {
-                        println!("write error {:?}", e);
-                        Next::end()
-                    }
-                }
-            }
+            body.write(transport)
         }
     }
 }
