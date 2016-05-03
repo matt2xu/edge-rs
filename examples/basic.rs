@@ -36,8 +36,8 @@ impl MyApp {
     }
 
     fn hello(&self,  req: &mut Request, mut res: Response) {
-        let first_name = req.params().find(|&&(ref k, _)| k == "first_name").map_or("John", |pair| &pair.1);
-        let last_name = req.params().find(|&&(ref k, _)| k == "last_name").map_or("Doe", |pair| &pair.1);
+        let first_name = req.param("first_name").unwrap_or("John");
+        let last_name = req.param("last_name").unwrap_or("Doe");
 
         let mut data = BTreeMap::new();
         data.insert("first_name", value::to_value(first_name));

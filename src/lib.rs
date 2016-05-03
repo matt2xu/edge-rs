@@ -75,7 +75,7 @@ use header::{Cookie as CookieHeader, ContentLength, ContentType, Header, HeaderF
 pub use header::CookiePair as Cookie;
 pub use hyper::status::StatusCode as Status;
 
-use hyper::{Control, Decoder, Encoder, Next, Get, Post, Head, Delete};
+use hyper::{Control, Decoder, Encoder, Method, Next, Get, Post, Head, Delete};
 
 use hyper::method::Method::{Put};
 use hyper::uri::RequestUri::{AbsolutePath, Star};
@@ -91,6 +91,7 @@ use serde::ser::Serialize as ToJson;
 
 pub use serde_json::value as value;
 
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 use std::borrow::Cow;
 use std::io::{Error, ErrorKind, Read, Result, Write};
@@ -113,11 +114,9 @@ pub struct Request {
     query: Option<String>,
     fragment: Option<String>,
 
-    params: Option<Params>,
+    params: Option<BTreeMap<String, String>>,
     body: Option<Buffer>
 }
-
-type Params = Vec<(String, String)>;
 
 impl Request {
     fn new(inner: HttpRequest) -> url::ParseResult<Request> {
@@ -167,9 +166,14 @@ impl Request {
         }
     }
 
-    /// Returns the parameters declared by the route that matched the URL of this request.
-    pub fn params(&self) -> std::slice::Iter<(String, String)> {
-        self.params.as_ref().map_or([].iter(), |params| params.iter())
+    /// Returns the method
+    pub fn method(&self) -> &Method {
+        self.inner.method()
+    }
+
+    /// Returns the parameter with the given name declared by the route that matched the URL of this request (if any).
+    pub fn param(&self, key: &str) -> Option<&str> {
+        self.params.as_ref().map_or(None, |map| map.get(key).map(String::as_str))
     }
 
     /// Returns the path of this request, i.e. the list of segments of the URL.
@@ -185,6 +189,11 @@ impl Request {
     /// Returns the fragment of this request (if any).
     pub fn fragment(&self) -> Option<&str> {
         self.fragment.as_ref().map(String::as_str)
+    }
+
+    /// Sets the parameters declared by the route that matched the URL of this request.
+    pub fn set_params(&mut self, params: BTreeMap<String, String>) {
+        self.params = Some(params);
     }
 }
 
@@ -393,44 +402,54 @@ struct Route {
 
 /// Router structure
 struct Router<T> {
-    routes: Vec<(Route, Callback<T>)>
+    routes: HashMap<Method, Vec<(Route, Callback<T>)>>
 }
 
 impl<T> Router<T> {
     fn new() -> Router<T> {
         Router {
-            routes: Vec::new()
+            routes: HashMap::new()
         }
     }
 
     /// Finds the first route (if any) that matches the given path, and returns the associated callback.
-    fn find(&self, path: &Vec<String>) -> Option<(Params, Callback<T>)> {
-        println!("path: {:?}", path);
-        let mut params = Vec::new();
-        'top: for &(ref route, ref callback) in self.routes.iter() {
-            println!("route: {:?}", route);
-            let mut it_route = route.segments.iter();
-            for actual in path.iter() {
-                match it_route.next() {
-                    Some(&Segment::Fixed(ref fixed)) if fixed != actual => continue 'top,
-                    Some(&Segment::Variable(ref name)) => {
-                        params.push((name.to_owned(), actual.to_owned()));
-                    },
-                    _ => ()
+    fn find_callback(&self, req: &mut Request) -> Option<Callback<T>> {
+        println!("path: {:?}", req.path());
+        if let Some(routes) = self.routes.get(req.method()) {
+            let mut params = BTreeMap::new();
+
+            'top: for &(ref route, ref callback) in routes.iter() {
+                println!("route: {:?}", route);
+                let mut it_route = route.segments.iter();
+                for actual in req.path() {
+                    match it_route.next() {
+                        Some(&Segment::Fixed(ref fixed)) if fixed != actual => continue 'top,
+                        Some(&Segment::Variable(ref name)) => {
+                            params.insert(name.to_owned(), actual.to_string());
+                        },
+                        _ => ()
+                    }
                 }
+
+                if it_route.next().is_none() {
+                    req.set_params(params);
+                    return Some(*callback);
+                }
+
+                params.clear();
             }
 
-            if it_route.next().is_none() {
-                return Some((params, *callback));
-            }
-            params.clear();
+            println!("no route matching method {} path {:?}", req.method(), req.path());
+        } else {
+            println!("no routes registered for method {}", req.method());
         }
+
         None
     }
 
-    fn insert(&mut self, route: Route, method: Callback<T>) {
+    fn insert(&mut self, method: Method, route: Route, callback: Callback<T>) {
         println!("register callback for route: {:?}", route);
-        self.routes.push((route, method));
+        self.routes.entry(method).or_insert(Vec::new()).push((route, callback));
     }
 }
 
@@ -461,7 +480,8 @@ impl<'a> Into<Route> for &'a str {
 
 /// Structure for an Edge application.
 pub struct Edge<T: Send + Sync> {
-    container: Arc<Container<T>>
+    inner: Arc<T>,
+    router: Arc<Router<T>>
 }
 
 impl<T: 'static + Send + Sync> Edge<T> {
@@ -469,76 +489,55 @@ impl<T: 'static + Send + Sync> Edge<T> {
     /// Creates an Edge application using the given inner structure.
     pub fn new(inner: T) -> Edge<T> {
         Edge {
-            container: Arc::new(Container {
-                inner: inner,
-                router_get: Router::new(),
-                router_post: Router::new(),
-                router_put: Router::new(),
-                router_delete: Router::new(),
-                router_head: Router::new()
-            })
+            inner: Arc::new(inner),
+            router: Arc::new(Router::new())
         }
     }
 
-    pub fn get(&mut self, path: &str, method: Callback<T>) {
-        self.container_mut().router_get.insert(path.into(), method);
+    /// Registers a callback for the given path for GE requests.
+    pub fn get(&mut self, path: &str, callback: Callback<T>) {
+        self.insert(Get, path, callback);
     }
 
-    pub fn post(&mut self, path: &str, method: Callback<T>) {
-        self.container_mut().router_post.insert(path.into(), method);
+    /// Registers a callback for the given path for POST requests.
+    pub fn post(&mut self, path: &str, callback: Callback<T>) {
+        self.insert(Post, path, callback);
     }
 
-    pub fn put(&mut self, path: &str, method: Callback<T>) {
-        self.container_mut().router_put.insert(path.into(), method);
+    /// Registers a callback for the given path for PUT requests.
+    pub fn put(&mut self, path: &str, callback: Callback<T>) {
+        self.insert(Put, path, callback);
     }
 
-    pub fn delete(&mut self, path: &str, method: Callback<T>) {
-        self.container_mut().router_delete.insert(path.into(), method);
+    /// Registers a callback for the given path for DELETE requests.
+    pub fn delete(&mut self, path: &str, callback: Callback<T>) {
+        self.insert(Delete, path, callback);
     }
 
-    pub fn head(&mut self, path: &str, method: Callback<T>) {
-        self.container_mut().router_head.insert(path.into(), method);
+    /// Registers a callback for the given path for HEAD requests.
+    pub fn head(&mut self, path: &str, callback: Callback<T>) {
+        self.insert(Head, path, callback);
     }
 
+    /// Inserts the given callback for the given method and given route.
+    pub fn insert(&mut self, method: Method, path: &str, callback: Callback<T>) {
+        let router = Arc::get_mut(&mut self.router).unwrap();
+        router.insert(method, path.into(), callback)
+    }
+
+    /// Starts a server.
     pub fn start(self, addr: &str) -> Result<()> {
         let server = Server::http(&addr.parse().unwrap()).unwrap();
         server.handle(self).unwrap();
         Ok(())
     }
 
-    fn container_mut(&mut self) -> &mut Container<T> {
-        Arc::get_mut(&mut self.container).unwrap()
-    }
-
-}
-
-/// Container of an application.
-struct Container<T: Send + Sync> {
-    inner: T,
-    router_get: Router<T>,
-    router_post: Router<T>,
-    router_put: Router<T>,
-    router_delete: Router<T>,
-    router_head: Router<T>
-}
-
-impl<T: 'static + Send + Sync> Container<T> {
-    fn find_callback(&self, req: &Request) -> Option<(Params, Callback<T>)> {
-        let router = match req.inner.method() {
-            &Get => &self.router_get,
-            &Post => &self.router_post,
-            &Put => &self.router_put,
-            &Delete => &self.router_delete,
-            &Head => &self.router_head,
-            ref method => { println!("unexpected method: {}", method); return None }
-        };
-
-        router.find(&req.path)
-    }
 }
 
 pub struct EdgeHandler<T: Send + Sync> {
-    inner: Arc<Container<T>>,
+    router: Arc<Router<T>>,
+    app: Arc<T>,
+
     request: Option<Request>,
     body: Option<Buffer>,
     response: Option<Response>,
@@ -552,7 +551,9 @@ impl<T: 'static + Send + Sync> HandlerFactory<HttpStream> for Edge<T> {
     fn create(&mut self, control: Control) -> EdgeHandler<T> {
         let (tx, rx) = mpsc::channel();
         EdgeHandler {
-            inner: self.container.clone(),
+            router: self.router.clone(),
+            app: self.inner.clone(),
+
             request: None,
             body: None,
             rx: rx,
@@ -568,10 +569,8 @@ impl<T: 'static + Send + Sync> EdgeHandler<T> {
         let mut res = self.response.take().unwrap();
         let notify = res.notify.clone();
 
-        if let Some((params, callback)) = self.inner.find_callback(req) {
-            req.params = Some(params);
-
-            callback(&self.inner.inner, req, res);
+        if let Some(callback) = self.router.find_callback(req) {
+            callback(&self.app, req, res);
         } else {
             println!("route not found for path {:?}", req.path());
             res.status(Status::NotFound);
@@ -637,8 +636,8 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
         {
             let req = self.request.as_mut().unwrap();
             let body = req.body.as_mut().unwrap();
-            if let Some(res) = body.read(transport) {
-                return res
+            if let Some(next) = body.read(transport) {
+                return next;
             }
         }
 
