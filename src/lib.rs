@@ -98,7 +98,6 @@ mod response;
 pub use request::Request;
 pub use response::Response;
 
-use buffer::Buffer;
 use router::{Router, Callback};
 use response::Resp;
 
@@ -163,7 +162,6 @@ pub struct EdgeHandler<T: Send + Sync> {
     app: Arc<T>,
 
     request: Option<Request>,
-    body: Option<Buffer>,
     response: Option<Response>,
     resp: Option<Resp>,
     rx: mpsc::Receiver<Resp>
@@ -179,7 +177,6 @@ impl<T: 'static + Send + Sync> HandlerFactory<HttpStream> for Edge<T> {
             app: self.inner.clone(),
 
             request: None,
-            body: None,
             rx: rx,
             response: Some(response::new(control, tx)),
             resp: None
@@ -263,16 +260,18 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
 
         // we got here from callback directly or Response notified the Control
         // in first case, we have a resp, in second case we need to recv it
-        let resp = self.resp.take().unwrap_or_else(|| self.rx.recv().unwrap());
+        if self.resp.is_none() {
+            self.resp = Some(self.rx.recv().unwrap());
+        }
+        let resp = self.resp.as_mut().unwrap();
 
-        let (status, headers, body) = resp.deconstruct();
+        let (status, headers) = resp.deconstruct();
         res.set_status(status);
         *res.headers_mut() = headers;
 
-        if body.is_empty() {
+        if resp.body().is_empty() {
             Next::end()
         } else {
-            self.body = Some(body);
             Next::write()
         }
     }
@@ -280,7 +279,7 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
     fn on_response_writable(&mut self, transport: &mut Encoder<HttpStream>) -> Next {
         println!("on_response_writable");
 
-        let body = self.body.as_mut().unwrap();
+        let body = self.resp.as_mut().unwrap().body();
         if body.is_empty() {
             // done writing the buffer
             println!("done writing");

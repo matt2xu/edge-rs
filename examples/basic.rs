@@ -89,6 +89,20 @@ impl MyApp {
         });
     }
 
+    fn streaming(&self, _req: &mut Request, mut res: Response) {
+        use std::thread;
+        use std::time::Duration;
+
+        thread::spawn(move || {
+            thread::sleep(Duration::from_secs(1));
+            res.append(b"toto");
+            thread::sleep(Duration::from_secs(1));
+            res.append(b"tata");
+            thread::sleep(Duration::from_secs(1));
+            res.append(b"tata");
+        });
+    }
+
 }
 
 fn main() {
@@ -100,6 +114,7 @@ fn main() {
     cter.get("/static", MyApp::files);
 
     cter.get("/redirect", MyApp::redirect);
+    cter.get("/streaming", MyApp::streaming);
 
     cter.post("/login", MyApp::login);
     cter.start("0.0.0.0:3000").unwrap();

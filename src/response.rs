@@ -23,28 +23,39 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use buffer::Buffer;
 
 pub struct Resp {
-    status: Status,
-    headers: Headers,
+    status: Option<Status>,
+    headers: Option<Headers>,
     body: Buffer
 }
 
 impl Resp {
     fn new() -> Resp {
         Resp {
-            status: Status::default(),
+            status: None,
             body: Buffer::new(),
-            headers: Headers::default()
+            headers: None
         }
     }
 
-    pub fn deconstruct(self) -> (Status, Headers, Buffer) { (self.status, self.headers, self.body) }
+    pub fn body(&mut self) -> &mut Buffer { &mut self.body }
+
+    pub fn deconstruct(&mut self) -> (Status, Headers) { (self.status.take().unwrap(), self.headers.take().unwrap()) }
 }
 
 pub struct Response {
-    resp: Resp,
+    resp: Option<Resp>,
     ctrl: Control,
     tx: mpsc::Sender<Resp>,
     notify: Arc<AtomicBool>
+}
+
+impl Drop for Response {
+    fn drop(&mut self) {
+        self.tx.send(self.resp.take().unwrap()).unwrap();
+        if self.notify.load(Ordering::Relaxed) {
+            self.ctrl.ready(Next::write()).unwrap();
+        }
+    }
 }
 
 fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
@@ -61,7 +72,7 @@ fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
 
 pub fn new(ctrl: Control, tx: mpsc::Sender<Resp>) -> Response {
     Response {
-        resp: Resp::new(),
+        resp: Some(Resp::new()),
         ctrl: ctrl,
         tx: tx,
         notify: Arc::new(AtomicBool::new(false))
@@ -73,9 +84,21 @@ pub fn get_notify(response: &mut Response) -> Arc<AtomicBool> {
 }
 
 impl Response {
+    fn resp(&mut self) -> &mut Resp {
+        self.resp.as_mut().unwrap()
+    }
+
+    fn headers(&self) -> &Headers {
+        self.resp.as_ref().unwrap().headers.as_ref().unwrap()
+    }
+
+    fn headers_mut(&mut self) -> &mut Headers {
+        self.resp.as_mut().unwrap().headers.as_mut().unwrap()
+    }
+
     /// Sets the status code of this response.
     pub fn status(&mut self, status: Status) -> &mut Self {
-        self.resp.status = status;
+        self.resp().status = Some(status);
         self
     }
 
@@ -102,29 +125,20 @@ impl Response {
 
     /// Sets the given header.
     pub fn header<H: Header + HeaderFormat>(&mut self, header: H) -> &mut Self {
-        self.resp.headers.set(header);
+        self.headers_mut().set(header);
         self
     }
 
     /// Sets the given header with raw strings.
     pub fn header_raw<K: Into<Cow<'static, str>> + Debug, V: Into<Vec<u8>>>(&mut self, name: K, value: V) -> &mut Self {
-        self.resp.headers.set_raw(name, vec![value.into()]);
+        self.headers_mut().set_raw(name, vec![value.into()]);
         self
-    }
-
-    /// Writes this response by notifying the framework
-    fn write(self) {
-        self.tx.send(self.resp).unwrap();
-        if self.notify.load(Ordering::Relaxed) {
-            self.ctrl.ready(Next::write()).unwrap();
-        }
     }
 
     /// Ends this response with the given status and an empty body
     pub fn end(mut self, status: Status) {
         self.status(status);
         self.len(0);
-        self.write();
     }
 
     pub fn render<P: AsRef<Path>, T: ToJson>(self, path: P, data: T) {
@@ -141,17 +155,24 @@ impl Response {
     /// Sends the given content and ends this response.
     /// Status defaults to 200 Ok, headers must have been set before this method is called.
     pub fn send<D: Into<Vec<u8>>>(mut self, content: D) {
-        self.resp.body.send(content);
-        let length = self.resp.body.len() as u64;
+        self.resp().body.send(content);
+        let length = self.resp().body.len() as u64;
         self.len(length);
-        self.write();
+    }
+
+    /// Sends the given content and ends this response.
+    /// Status defaults to 200 Ok, headers must have been set before this method is called.
+    pub fn append<D: AsRef<[u8]>>(&mut self, content: D) {
+        self.resp().body.append(content.as_ref());
+        let length = self.resp().body.len() as u64;
+        self.len(length);
     }
 
     /// Sends the given file, setting the Content-Type based on the file's extension.
     /// Known extensions are htm, html, jpg, jpeg, png, js, css.
     /// If the file does not exist, this method sends a 404 Not Found response.
     pub fn send_file<P: AsRef<Path>>(mut self, path: P) {
-        if !self.resp.headers.has::<ContentType>() {
+        if !self.headers().has::<ContentType>() {
             let extension = path.as_ref().extension();
             if let Some(ext) = extension {
                 let content_type = match ext.to_string_lossy().as_ref() {
@@ -164,7 +185,7 @@ impl Response {
                 };
 
                 if let Some(content_type) = content_type {
-                    self.resp.headers.set(content_type);
+                    self.headers_mut().set(content_type);
                 }
             }
         }
@@ -203,10 +224,10 @@ impl Response {
         let mut cookie = Cookie::new(name.to_owned(), value.to_owned());
         set_options.map(|f| f(&mut cookie));
 
-        if self.resp.headers.has::<SetCookie>() {
-            self.resp.headers.get_mut::<SetCookie>().unwrap().push(cookie)
+        if self.headers().has::<SetCookie>() {
+            self.headers_mut().get_mut::<SetCookie>().unwrap().push(cookie)
         } else {
-            self.resp.headers.set(SetCookie(vec![cookie]))
+            self.headers_mut().set(SetCookie(vec![cookie]))
         }
     }
 }

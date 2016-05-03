@@ -31,6 +31,10 @@ impl Buffer {
         }
     }
 
+    pub fn append(&mut self, bytes: &[u8]) {
+        self.content.extend_from_slice(bytes);
+    }
+
     /// used when writing to check whether the buffer still has data
     pub fn is_empty(&self) -> bool { self.pos == self.len() }
 
