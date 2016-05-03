@@ -71,412 +71,36 @@ extern crate serde;
 extern crate serde_json;
 
 pub use hyper::header as header;
-use header::{Cookie as CookieHeader, ContentLength, ContentType, Header, HeaderFormat, Location, SetCookie};
 pub use header::CookiePair as Cookie;
 pub use hyper::status::StatusCode as Status;
 
 use hyper::{Control, Decoder, Encoder, Method, Next, Get, Post, Head, Delete};
 
 use hyper::method::Method::{Put};
-use hyper::uri::RequestUri::{AbsolutePath, Star};
 
 use hyper::net::HttpStream;
 use hyper::server::{Handler, HandlerFactory, Server};
 use hyper::server::{Request as HttpRequest, Response as HttpResponse};
 
-use hyper::mime::{Mime, TopLevel, SubLevel, Attr, Value};
-
-use handlebars::Handlebars;
-use serde::ser::Serialize as ToJson;
-
 pub use serde_json::value as value;
 
-use std::collections::{BTreeMap, HashMap};
-use std::fmt::Debug;
-use std::borrow::Cow;
-use std::io::{Error, ErrorKind, Read, Result, Write};
-use std::fs::{File, read_dir};
-use std::path::Path;
+use std::io::{Read, Result, Write};
 
 use std::sync::Arc;
 use std::sync::mpsc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
 mod buffer;
+mod router;
+mod request;
+mod response;
+
+pub use request::Request;
+pub use response::Response;
+
 use buffer::Buffer;
-
-/// A request, with a path, query, and fragment (accessor methods not yet implemented for the last two).
-///
-/// Can be queried for the parameters that were matched by the router.
-pub struct Request {
-    inner: HttpRequest,
-    path: Vec<String>,
-    query: Option<String>,
-    fragment: Option<String>,
-
-    params: Option<BTreeMap<String, String>>,
-    body: Option<Buffer>
-}
-
-impl Request {
-    fn new(inner: HttpRequest) -> url::ParseResult<Request> {
-        let (path, query, fragment) = match *inner.uri() {
-            AbsolutePath(ref path) => match url::parse_path(path) {
-                Ok(res) => res,
-                Err(e) => return Err(e)
-            },
-            Star => (vec!["*".to_owned()], None, None),
-            _ => panic!("unsupported request URI")
-        };
-
-        Ok(Request {
-            inner: inner,
-            path: path,
-            query: query,
-            fragment: fragment,
-            params: None,
-            body: None})
-    }
-
-    /// Reads this request's body until the end, and returns it as a vector of bytes.
-    pub fn body(&self) -> Result<&[u8]> {
-        match self.body {
-            Some(ref buffer) => Ok(buffer.as_ref()),
-            None => Err(Error::new(ErrorKind::UnexpectedEof, "empty body"))
-        }
-    }
-
-    /// Returns an iterator over the cookies of this request.
-    pub fn cookies(&self) -> std::slice::Iter<Cookie> {
-        self.inner.headers().get::<CookieHeader>().map_or([].iter(),
-            |&CookieHeader(ref cookies)| cookies.iter()
-        )
-    }
-
-    /// Reads the body of this request, parses it as an application/x-www-form-urlencoded format,
-    /// and returns it as a vector of (name, value) pairs.
-    pub fn form(&mut self) -> Result<Vec<(String, String)>> {
-        let body = try!(self.body());
-
-        match self.inner.headers().get::<ContentType>() {
-            Some(&ContentType(Mime(TopLevel::Application, SubLevel::WwwFormUrlEncoded, _))) =>
-                Ok(url::form_urlencoded::parse(body)),
-            Some(_) => Err(Error::new(ErrorKind::InvalidInput, "invalid Content-Type, expected application/x-www-form-urlencoded")),
-            None => Err(Error::new(ErrorKind::InvalidInput, "missing Content-Type header"))
-        }
-    }
-
-    /// Returns the method
-    pub fn method(&self) -> &Method {
-        self.inner.method()
-    }
-
-    /// Returns the parameter with the given name declared by the route that matched the URL of this request (if any).
-    pub fn param(&self, key: &str) -> Option<&str> {
-        self.params.as_ref().map_or(None, |map| map.get(key).map(String::as_str))
-    }
-
-    /// Returns the path of this request, i.e. the list of segments of the URL.
-    pub fn path(&self) -> &[String] {
-        &self.path
-    }
-
-    /// Returns the query of this request (if any).
-    pub fn query(&self) -> Option<&str> {
-        self.query.as_ref().map(String::as_str)
-    }
-
-    /// Returns the fragment of this request (if any).
-    pub fn fragment(&self) -> Option<&str> {
-        self.fragment.as_ref().map(String::as_str)
-    }
-
-    /// Sets the parameters declared by the route that matched the URL of this request.
-    pub fn set_params(&mut self, params: BTreeMap<String, String>) {
-        self.params = Some(params);
-    }
-}
-
-struct Resp {
-    status: Status,
-    headers: hyper::Headers,
-    body: Buffer
-}
-
-impl Resp {
-    fn new() -> Resp {
-        Resp {
-            status: Status::default(),
-            body: Buffer::new(),
-            headers: hyper::Headers::default()
-        }
-    }
-
-    fn deconstruct(self) -> (Status, hyper::Headers, Buffer) { (self.status, self.headers, self.body) }
-}
-
-pub struct Response {
-    resp: Resp,
-    ctrl: Control,
-    tx: mpsc::Sender<Resp>,
-    notify: Arc<AtomicBool>
-}
-
-fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
-    for it in try!(read_dir("views/partials")) {
-        let entry = try!(it);
-        let path = entry.path();
-        if path.extension().is_some() && path.extension().unwrap() == "hbs" {
-            let name = path.file_stem().unwrap().to_str().unwrap();
-            handlebars.register_template_file(name, path.as_path()).unwrap();
-        }
-    }
-    Ok(())
-}
-
-impl Response {
-    fn new(ctrl: Control, tx: mpsc::Sender<Resp>) -> Response {
-        Response {
-            resp: Resp::new(),
-            ctrl: ctrl,
-            tx: tx,
-            notify: Arc::new(AtomicBool::new(false))
-        }
-    }
-
-    /// Sets the status code of this response.
-    pub fn status(&mut self, status: Status) -> &mut Self {
-        self.resp.status = status;
-        self
-    }
-
-    /// Sets the Content-Type header.
-    pub fn content_type<S: Into<Vec<u8>>>(&mut self, mime: S) -> &mut Self {
-        self.header_raw("Content-Type", mime)
-    }
-
-    /// Sets the Content-Length header.
-    pub fn len(&mut self, len: u64) -> &mut Self {
-        self.header(ContentLength(len))
-    }
-
-    /// Sets the Location header.
-    pub fn location<S: Into<String>>(&mut self, url: S) -> &mut Self {
-        self.header(Location(url.into()))
-    }
-
-    /// Redirects to the given URL with the given status, or 302 Found if none is given.
-    pub fn redirect(mut self, url: &str, status: Option<Status>) {
-        self.location(url);
-        self.end(status.unwrap_or(Status::Found))
-    }
-
-    /// Sets the given header.
-    pub fn header<H: Header + HeaderFormat>(&mut self, header: H) -> &mut Self {
-        self.resp.headers.set(header);
-        self
-    }
-
-    /// Sets the given header with raw strings.
-    pub fn header_raw<K: Into<Cow<'static, str>> + Debug, V: Into<Vec<u8>>>(&mut self, name: K, value: V) -> &mut Self {
-        self.resp.headers.set_raw(name, vec![value.into()]);
-        self
-    }
-
-    /// Writes this response by notifying the framework
-    fn write(self) {
-        self.tx.send(self.resp).unwrap();
-        if self.notify.load(Ordering::Relaxed) {
-            self.ctrl.ready(Next::write()).unwrap();
-        }
-    }
-
-    /// Ends this response with the given status and an empty body
-    pub fn end(mut self, status: Status) {
-        self.status(status);
-        self.len(0);
-        self.write();
-    }
-
-    pub fn render<P: AsRef<Path>, T: ToJson>(self, path: P, data: T) {
-        let mut handlebars = Handlebars::new();
-        let path = path.as_ref();
-        let name = path.file_stem().unwrap().to_str().unwrap();
-
-        handlebars.register_template_file(name, path).unwrap();
-        register_partials(&mut handlebars).unwrap();
-        let result = handlebars.render(name, &data);
-        self.send(result.unwrap())
-    }
-
-    /// Sends the given content and ends this response.
-    /// Status defaults to 200 Ok, headers must have been set before this method is called.
-    pub fn send<D: Into<Vec<u8>>>(mut self, content: D) {
-        self.resp.body.send(content);
-        let length = self.resp.body.len() as u64;
-        self.len(length);
-        self.write();
-    }
-
-    /// Sends the given file, setting the Content-Type based on the file's extension.
-    /// Known extensions are htm, html, jpg, jpeg, png, js, css.
-    /// If the file does not exist, this method sends a 404 Not Found response.
-    pub fn send_file<P: AsRef<Path>>(mut self, path: P) {
-        if !self.resp.headers.has::<ContentType>() {
-            let extension = path.as_ref().extension();
-            if let Some(ext) = extension {
-                let content_type = match ext.to_string_lossy().as_ref() {
-                    "htm" | "html" => Some(ContentType::html()),
-                    "jpg" | "jpeg" => Some(ContentType::jpeg()),
-                    "png" => Some(ContentType::png()),
-                    "js" => Some(ContentType(Mime(TopLevel::Text, SubLevel::Javascript, vec![(Attr::Charset, Value::Utf8)]))),
-                    "css" => Some(ContentType(Mime(TopLevel::Text, SubLevel::Css, vec![(Attr::Charset, Value::Utf8)]))),
-                    _ => None
-                };
-
-                if let Some(content_type) = content_type {
-                    self.resp.headers.set(content_type);
-                }
-            }
-        }
-
-        // read the whole file at once and send it
-        // probably not the best idea for big files, we should use stream instead in that case
-        match File::open(path) {
-            Ok(mut file) => {
-                let mut buf = Vec::with_capacity(file.metadata().ok().map_or(1024, |meta| meta.len() as usize));
-                if let Err(err) = file.read_to_end(&mut buf) {
-                    self.status(Status::InternalServerError).content_type("text/plain");
-                    self.send(format!("{}", err))
-                } else {
-                    self.send(buf)
-                }
-            },
-            Err(ref err) if err.kind() == ErrorKind::NotFound => self.end(Status::NotFound),
-            Err(ref err) => {
-                self.status(Status::InternalServerError).content_type("text/plain");
-                self.send(format!("{}", err))
-            }
-        }
-    }
-
-    /// Writes the body of this response using the given source function.
-    pub fn stream<F, R>(&mut self, source: F) -> Result<()> where F: FnOnce(&mut Write) -> Result<R> {
-        //let mut streaming = try!(self.inner.start());
-        //try!(source(&mut streaming));
-        //streaming.end()
-        Ok(())
-    }
-
-    /// Sets a cookie with the given name and value.
-    /// If set, the set_options function will be called to update the cookie's options.
-    pub fn cookie<F>(&mut self, name: &str, value: &str, set_options: Option<F>) where F: Fn(&mut Cookie) {
-        let mut cookie = Cookie::new(name.to_owned(), value.to_owned());
-        set_options.map(|f| f(&mut cookie));
-
-        if self.resp.headers.has::<SetCookie>() {
-            self.resp.headers.get_mut::<SetCookie>().unwrap().push(cookie)
-        } else {
-            self.resp.headers.set(SetCookie(vec![cookie]))
-        }
-    }
-}
-
-/// Signature for a callback method
-pub type Callback<T> = fn(&T, &mut Request, Response);
-
-/// A segment is either a fixed string, or a variable with a name
-#[derive(Debug, Clone)]
-enum Segment {
-    Fixed(String),
-    Variable(String)
-}
-
-/// A route is an absolute URL pattern with a leading slash, and segments separated by slashes.
-///
-/// A segment that begins with a colon declares a variable, for example "/:user_id".
-#[derive(Debug)]
-struct Route {
-    segments: Vec<Segment>
-}
-
-/// Router structure
-struct Router<T> {
-    routes: HashMap<Method, Vec<(Route, Callback<T>)>>
-}
-
-impl<T> Router<T> {
-    fn new() -> Router<T> {
-        Router {
-            routes: HashMap::new()
-        }
-    }
-
-    /// Finds the first route (if any) that matches the given path, and returns the associated callback.
-    fn find_callback(&self, req: &mut Request) -> Option<Callback<T>> {
-        println!("path: {:?}", req.path());
-        if let Some(routes) = self.routes.get(req.method()) {
-            let mut params = BTreeMap::new();
-
-            'top: for &(ref route, ref callback) in routes.iter() {
-                println!("route: {:?}", route);
-                let mut it_route = route.segments.iter();
-                for actual in req.path() {
-                    match it_route.next() {
-                        Some(&Segment::Fixed(ref fixed)) if fixed != actual => continue 'top,
-                        Some(&Segment::Variable(ref name)) => {
-                            params.insert(name.to_owned(), actual.to_string());
-                        },
-                        _ => ()
-                    }
-                }
-
-                if it_route.next().is_none() {
-                    req.set_params(params);
-                    return Some(*callback);
-                }
-
-                params.clear();
-            }
-
-            println!("no route matching method {} path {:?}", req.method(), req.path());
-        } else {
-            println!("no routes registered for method {}", req.method());
-        }
-
-        None
-    }
-
-    fn insert(&mut self, method: Method, route: Route, callback: Callback<T>) {
-        println!("register callback for route: {:?}", route);
-        self.routes.entry(method).or_insert(Vec::new()).push((route, callback));
-    }
-}
-
-/// Creates a Route from a &str.
-impl<'a> Into<Route> for &'a str {
-    fn into(self) -> Route {
-        if self.len() == 0 {
-            panic!("route must not be empty");
-        }
-        if &self[0..1] != "/" {
-            panic!("route must begin with a slash");
-        }
-
-        let stripped = &self[1..];
-        let route = Route {
-            segments:
-                stripped.split('/').map(|segment| if segment.len() > 0 && &segment[0..1] == ":" {
-                        Segment::Variable(segment[1..].to_owned())
-                    } else {
-                        Segment::Fixed(segment.to_owned())
-                    }
-                ).collect::<Vec<Segment>>()
-        };
-        println!("into from {} to {:?}", self, route);
-        route
-    }
-}
+use router::{Router, Callback};
+use response::Resp;
 
 /// Structure for an Edge application.
 pub struct Edge<T: Send + Sync> {
@@ -557,7 +181,7 @@ impl<T: 'static + Send + Sync> HandlerFactory<HttpStream> for Edge<T> {
             request: None,
             body: None,
             rx: rx,
-            response: Some(Response::new(control, tx)),
+            response: Some(response::new(control, tx)),
             resp: None
         }
     }
@@ -567,7 +191,7 @@ impl<T: 'static + Send + Sync> EdgeHandler<T> {
     fn callback(&mut self) -> Next {
         let req = &mut self.request.as_mut().unwrap();
         let mut res = self.response.take().unwrap();
-        let notify = res.notify.clone();
+        let notify = response::get_notify(&mut res);
 
         if let Some(callback) = self.router.find_callback(req) {
             callback(&self.app, req, res);
@@ -601,22 +225,12 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
     fn on_request(&mut self, req: HttpRequest) -> Next {
         println!("on_request");
 
-        match Request::new(req) {
-            Ok(mut req) => {
-                match *req.inner.method() {
-                    Put | Post => {
-                        // need to read body
-                        req.body = Some(match req.inner.headers().get::<ContentLength>() {
-                            Some(&ContentLength(len)) => Buffer::with_capacity(len as usize),
-                            None => Buffer::new()
-                        });
-                        self.request = Some(req);
-                        Next::read()
-                    }
-                    _ => {
-                        self.request = Some(req);
-                        self.callback()
-                    }
+        match request::new(req) {
+            Ok(req) => {
+                self.request = Some(req);
+                match *self.request.as_ref().unwrap().method() {
+                    Put | Post => Next::read(),
+                    _ => self.callback()
                 }
             },
             Err(error) => {
@@ -635,7 +249,7 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
         // we can only get here if self.request = Some(...), or there is a bug
         {
             let req = self.request.as_mut().unwrap();
-            let body = req.body.as_mut().unwrap();
+            let body = request::body(req);
             if let Some(next) = body.read(transport) {
                 return next;
             }
