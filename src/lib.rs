@@ -170,18 +170,18 @@ impl Request {
     }
 
     /// Returns the path of this request, i.e. the list of segments of the URL.
-    pub fn path(&self) -> &Vec<String> {
+    pub fn path(&self) -> &[String] {
         &self.path
     }
 
     /// Returns the query of this request (if any).
-    pub fn query(&self) -> &Option<String> {
-        &self.query
+    pub fn query(&self) -> Option<&str> {
+        self.query.as_ref().map(String::as_str)
     }
 
     /// Returns the fragment of this request (if any).
-    pub fn fragment(&self) -> &Option<String> {
-        &self.fragment
+    pub fn fragment(&self) -> Option<&str> {
+        self.fragment.as_ref().map(String::as_str)
     }
 }
 
