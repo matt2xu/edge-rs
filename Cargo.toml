@@ -5,3 +5,4 @@ authors = ["Matthieu Wipliez <matthieu.wipliez@gmail.com>"]
 
 [dependencies]
 deque = "*"
+crossbeam = "0.2.5"
