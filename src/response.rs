@@ -1,4 +1,4 @@
-use hyper::header::{CookiePair as Cookie, ContentLength, ContentType, Header, HeaderFormat, Location, SetCookie};
+use hyper::header::{CookiePair as Cookie, ContentLength, ContentType, Header, Location, SetCookie};
 use hyper::status::StatusCode as Status;
 
 use hyper::{Control, Headers, Next};
@@ -16,45 +16,83 @@ use std::io::{ErrorKind, Read, Result, Write};
 use std::fs::{File, read_dir};
 use std::path::Path;
 
+use std::cell::{Ref, RefMut, RefCell};
 use std::sync::Arc;
-use std::sync::mpsc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use buffer::Buffer;
 
 pub struct Resp {
-    status: Option<Status>,
-    headers: Option<Headers>,
-    body: Buffer
+    status: Option<RefCell<Status>>,
+    headers: Option<RefCell<Headers>>,
+    body: Option<RefCell<Buffer>>,
+    notify: RefCell<bool>,
+    ctrl: Control
 }
 
+unsafe impl Sync for Resp {}
+
 impl Resp {
-    fn new() -> Resp {
+    pub fn new(ctrl: Control) -> Resp {
         Resp {
-            status: None,
-            body: Buffer::new(),
-            headers: None
+            status: Some(RefCell::new(Status::Ok)),
+            headers: Some(RefCell::new(Headers::default())),
+            body: Some(RefCell::new(Buffer::new())),
+            notify: RefCell::new(false),
+            ctrl: ctrl
         }
     }
 
-    pub fn body(&mut self) -> &mut Buffer { &mut self.body }
+    fn len(&self) -> usize {
+        self.body.as_ref().unwrap().borrow().len()
+    }
 
-    pub fn deconstruct(&mut self) -> (Status, Headers) { (self.status.take().unwrap(), self.headers.take().unwrap()) }
+    fn append<D: AsRef<[u8]>>(&self, content: D) {
+        self.body.as_ref().unwrap().borrow_mut().append(content.as_ref());
+        if *self.notify.borrow() {
+            self.ctrl.ready(Next::write()).unwrap();
+        }
+    }
+
+    fn send<D: Into<Vec<u8>>>(&self, content: D) {
+        self.body.as_ref().unwrap().borrow_mut().send(content);
+    }
+
+    pub fn deconstruct(&mut self) -> (Status, Headers, Buffer) {
+        (self.status.take().unwrap().into_inner(),
+        self.headers.take().unwrap().into_inner(),
+        self.body.take().unwrap().into_inner())
+    }
+
+    fn status(&self, status: Status) {
+        *self.status.as_ref().unwrap().borrow_mut() = status;
+    }
+
+    fn headers(&self) -> Ref<Headers> {
+        self.headers.as_ref().unwrap().borrow()
+    }
+
+    fn headers_mut(&self) -> RefMut<Headers> {
+        self.headers.as_ref().unwrap().borrow_mut()
+    }
+
+    fn done(&self) {
+        if *self.notify.borrow() {
+            self.ctrl.ready(Next::write()).unwrap();
+        }
+    }
+
+    pub fn set_notify(&self) {
+        *self.notify.borrow_mut() = true;
+    }
 }
 
 pub struct Response {
-    resp: Option<Resp>,
-    ctrl: Control,
-    tx: mpsc::Sender<Resp>,
-    notify: Arc<AtomicBool>
+    resp: Arc<Resp>
 }
 
 impl Drop for Response {
     fn drop(&mut self) {
-        self.tx.send(self.resp.take().unwrap()).unwrap();
-        if self.notify.load(Ordering::Relaxed) {
-            self.ctrl.ready(Next::write()).unwrap();
-        }
+        self.resp.done()
     }
 }
 
@@ -70,35 +108,25 @@ fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
     Ok(())
 }
 
-pub fn new(ctrl: Control, tx: mpsc::Sender<Resp>) -> Response {
+pub fn new(resp: &Arc<Resp>) -> Response {
     Response {
-        resp: Some(Resp::new()),
-        ctrl: ctrl,
-        tx: tx,
-        notify: Arc::new(AtomicBool::new(false))
+        resp: resp.clone()
     }
-}
-
-pub fn get_notify(response: &mut Response) -> Arc<AtomicBool> {
-    response.notify.clone()
 }
 
 impl Response {
-    fn resp(&mut self) -> &mut Resp {
-        self.resp.as_mut().unwrap()
+
+    fn headers(&self) -> Ref<Headers> {
+        self.resp.headers()
     }
 
-    fn headers(&self) -> &Headers {
-        self.resp.as_ref().unwrap().headers.as_ref().unwrap()
-    }
-
-    fn headers_mut(&mut self) -> &mut Headers {
-        self.resp.as_mut().unwrap().headers.as_mut().unwrap()
+    fn headers_mut(&self) -> RefMut<Headers> {
+        self.resp.headers_mut()
     }
 
     /// Sets the status code of this response.
     pub fn status(&mut self, status: Status) -> &mut Self {
-        self.resp().status = Some(status);
+        self.resp.status(status);
         self
     }
 
@@ -124,7 +152,7 @@ impl Response {
     }
 
     /// Sets the given header.
-    pub fn header<H: Header + HeaderFormat>(&mut self, header: H) -> &mut Self {
+    pub fn header<H: Header>(&mut self, header: H) -> &mut Self {
         self.headers_mut().set(header);
         self
     }
@@ -155,16 +183,16 @@ impl Response {
     /// Sends the given content and ends this response.
     /// Status defaults to 200 Ok, headers must have been set before this method is called.
     pub fn send<D: Into<Vec<u8>>>(mut self, content: D) {
-        self.resp().body.send(content);
-        let length = self.resp().body.len() as u64;
-        self.len(length);
+        self.resp.send(content);
+        let length = self.resp.len();
+        self.len(length as u64);
     }
 
     /// Sends the given content and ends this response.
     /// Status defaults to 200 Ok, headers must have been set before this method is called.
     pub fn append<D: AsRef<[u8]>>(&mut self, content: D) {
-        self.resp().body.append(content.as_ref());
-        let length = self.resp().body.len() as u64;
+        self.resp.append(content);
+        let length = self.resp.len() as u64;
         self.len(length);
     }
 

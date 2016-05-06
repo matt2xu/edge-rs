@@ -1,18 +1,14 @@
 extern crate url;
 
 pub use hyper::header as header;
-use header::{Cookie as CookieHeader, ContentLength, ContentType};
+use header::{Cookie as CookieHeader, ContentType};
 pub use header::CookiePair as Cookie;
 pub use hyper::status::StatusCode as Status;
 
-use hyper::{Headers, Method, Post};
-
-use hyper::method::Method::{Put};
+use hyper::{Headers, Method};
 use hyper::uri::RequestUri::{AbsolutePath, Star};
-
-use hyper::server::Request as HttpRequest;
-
 use hyper::mime::{Mime, TopLevel, SubLevel};
+use hyper::server::Request as HttpRequest;
 
 use std::collections::BTreeMap;
 use std::io::{Error, ErrorKind, Result};
@@ -43,25 +39,19 @@ pub fn new(inner: HttpRequest) -> url::ParseResult<Request> {
         _ => panic!("unsupported request URI")
     };
 
-    let body = match *inner.method() {
-        Put | Post => Some(match inner.headers().get::<ContentLength>() {
-            Some(&ContentLength(len)) => Buffer::with_capacity(len as usize),
-            None => Buffer::new()
-        }),
-        _ => None
-    };
-
     Ok(Request {
         inner: inner,
         path: path,
         query: query,
         fragment: fragment,
         params: None,
-        body: body})
+        body: None})
 }
 
-pub fn body(request: &mut Request) -> &mut Buffer {
-    request.body.as_mut().unwrap()
+pub fn set_body(request: Option<&mut Request>, body: Option<Buffer>) {
+    if let Some(req) = request {
+        req.body = body;
+    }
 }
 
 impl Request {

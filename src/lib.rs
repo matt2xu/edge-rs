@@ -74,21 +74,18 @@ pub use hyper::header as header;
 pub use header::CookiePair as Cookie;
 pub use hyper::status::StatusCode as Status;
 
+pub use serde_json::value as value;
+
+use header::ContentLength;
 use hyper::{Control, Decoder, Encoder, Method, Next, Get, Post, Head, Delete};
-
-use hyper::method::Method::{Put};
-
+use hyper::method::Method::Put;
 use hyper::net::HttpStream;
 use hyper::server::{Handler, HandlerFactory, Server};
 use hyper::server::{Request as HttpRequest, Response as HttpResponse};
 
-pub use serde_json::value as value;
-
 use std::io::{Read, Result, Write};
 
 use std::sync::Arc;
-use std::sync::mpsc;
-use std::sync::atomic::Ordering;
 
 mod buffer;
 mod router;
@@ -98,6 +95,7 @@ mod response;
 pub use request::Request;
 pub use response::Response;
 
+use buffer::Buffer;
 use router::{Router, Callback};
 use response::Resp;
 
@@ -162,24 +160,21 @@ pub struct EdgeHandler<T: Send + Sync> {
     app: Arc<T>,
 
     request: Option<Request>,
-    response: Option<Response>,
-    resp: Option<Resp>,
-    rx: mpsc::Receiver<Resp>
+    body: Option<Buffer>,
+    resp: Arc<Resp>
 }
 
 impl<T: 'static + Send + Sync> HandlerFactory<HttpStream> for Edge<T> {
     type Output = EdgeHandler<T>;
 
     fn create(&mut self, control: Control) -> EdgeHandler<T> {
-        let (tx, rx) = mpsc::channel();
         EdgeHandler {
             router: self.router.clone(),
             app: self.inner.clone(),
 
             request: None,
-            rx: rx,
-            response: Some(response::new(control, tx)),
-            resp: None
+            body: None,
+            resp: Arc::new(Resp::new(control))
         }
     }
 }
@@ -187,32 +182,26 @@ impl<T: 'static + Send + Sync> HandlerFactory<HttpStream> for Edge<T> {
 impl<T: 'static + Send + Sync> EdgeHandler<T> {
     fn callback(&mut self) -> Next {
         let req = &mut self.request.as_mut().unwrap();
-        let mut res = self.response.take().unwrap();
-        let notify = response::get_notify(&mut res);
 
         if let Some(callback) = self.router.find_callback(req) {
+            let res = response::new(&self.resp);
             callback(&self.app, req, res);
         } else {
             println!("route not found for path {:?}", req.path());
+            let mut res = response::new(&self.resp);
             res.status(Status::NotFound);
             res.content_type("text/plain");
             res.send(format!("not found: {:?}", req.path()));
         }
 
-        match self.rx.try_recv() {
-            Ok(resp) => {
-                // try_recv only succeeds if response available
-                self.resp = Some(resp);
-                println!("response done, return Next::write after callback");
-                Next::write()
-            }
-            Err(mpsc::TryRecvError::Empty) => {
-                // otherwise we ask the Response to notify us, and wait
-                notify.store(true, Ordering::Relaxed);
-                println!("response not done, return Next::wait after callback");
-                Next::wait()
-            }
-            Err(_) => panic!("channel unexpectedly disconnected")
+        if Arc::get_mut(&mut self.resp).is_some() {
+            println!("response done, return Next::write after callback");
+            Next::write()
+        } else {
+            // otherwise we ask the Response to notify us, and wait
+            println!("response not done, return Next::wait after callback");
+            self.resp.set_notify();
+            Next::wait()
         }
     }
 }
@@ -224,14 +213,23 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
 
         match request::new(req) {
             Ok(req) => {
+                self.body = match *req.method() {
+                    Put | Post => Some(match req.headers().get::<ContentLength>() {
+                        Some(&ContentLength(len)) => Buffer::with_capacity(len as usize),
+                        None => Buffer::new()
+                    }),
+                    _ => None
+                };
+
                 self.request = Some(req);
-                match *self.request.as_ref().unwrap().method() {
-                    Put | Post => Next::read(),
-                    _ => self.callback()
+                if self.body.is_some() {
+                    Next::read()
+                } else {
+                    self.callback()
                 }
             },
             Err(error) => {
-                let mut res = self.response.take().unwrap();
+                let mut res = response::new(&self.resp);
                 res.status(Status::BadRequest);
                 res.content_type("text/plain");
                 res.send(error.to_string());
@@ -243,35 +241,32 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
     fn on_request_readable(&mut self, transport: &mut Decoder<HttpStream>) -> Next {
         println!("on_request_readable");
 
-        // we can only get here if self.request = Some(...), or there is a bug
+        // we can only get here if self.body = Some(...), or there is a bug
         {
-            let req = self.request.as_mut().unwrap();
-            let body = request::body(req);
+            let body = self.body.as_mut().unwrap();
             if let Some(next) = body.read(transport) {
                 return next;
             }
         }
 
+        request::set_body(self.request.as_mut(), self.body.take());
         self.callback()
     }
 
     fn on_response(&mut self, res: &mut HttpResponse) -> Next {
         println!("on_response");
 
-        // we got here from callback directly or Response notified the Control
-        // in first case, we have a resp, in second case we need to recv it
-        if self.resp.is_none() {
-            self.resp = Some(self.rx.recv().unwrap());
-        }
-        let resp = self.resp.as_mut().unwrap();
+        // we got here from callback directly or Resp notified the Control
+        let resp = Arc::get_mut(&mut self.resp).unwrap();
 
-        let (status, headers) = resp.deconstruct();
+        let (status, headers, body) = resp.deconstruct();
         res.set_status(status);
         *res.headers_mut() = headers;
 
-        if resp.body().is_empty() {
+        if body.is_empty() {
             Next::end()
         } else {
+            self.body = Some(body);
             Next::write()
         }
     }
@@ -279,7 +274,7 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
     fn on_response_writable(&mut self, transport: &mut Encoder<HttpStream>) -> Next {
         println!("on_response_writable");
 
-        let body = self.resp.as_mut().unwrap().body();
+        let body = self.body.as_mut().unwrap();
         if body.is_empty() {
             // done writing the buffer
             println!("done writing");
