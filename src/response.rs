@@ -16,7 +16,7 @@ use std::io::{ErrorKind, Read, Result, Write};
 use std::fs::{File, read_dir};
 use std::path::Path;
 
-use std::cell::{Ref, RefMut, RefCell};
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -32,6 +32,7 @@ pub struct Resp {
     ctrl: Control
 }
 
+// no worries, the resp is always modified by only one thread at a time
 unsafe impl Sync for Resp {}
 
 impl Resp {
@@ -45,16 +46,20 @@ impl Resp {
         }
     }
 
+    fn body(&self) -> &RefCell<Buffer> {
+        self.body.as_ref().unwrap()
+    }
+
     fn len(&self) -> usize {
-        self.body.as_ref().unwrap().borrow().len()
+        self.body().borrow().len()
     }
 
     fn append<D: AsRef<[u8]>>(&self, content: D) {
-        self.body.as_ref().unwrap().borrow_mut().append(content.as_ref());
+        self.body().borrow_mut().append(content.as_ref());
     }
 
     fn send<D: Into<Vec<u8>>>(&self, content: D) {
-        self.body.as_ref().unwrap().borrow_mut().send(content);
+        self.body().borrow_mut().send(content);
     }
 
     pub fn deconstruct(&mut self) -> (Status, Headers, Buffer) {
@@ -67,12 +72,24 @@ impl Resp {
         *self.status.as_ref().unwrap().borrow_mut() = status;
     }
 
-    fn headers(&self) -> Ref<Headers> {
-        self.headers.as_ref().unwrap().borrow()
+    fn headers(&self) -> &RefCell<Headers> {
+        self.headers.as_ref().unwrap()
     }
 
-    fn headers_mut(&self) -> RefMut<Headers> {
-        self.headers.as_ref().unwrap().borrow_mut()
+    fn has_header<H: Header>(&self) -> bool {
+        self.headers().borrow().has::<H>()
+    }
+
+    fn header<H: Header>(&self, header: H) {
+        self.headers().borrow_mut().set(header);
+    }
+
+    fn header_raw<K: Into<Cow<'static, str>> + Debug>(&self, name: K, value: Vec<Vec<u8>>) {
+        self.headers().borrow_mut().set_raw(name, value);
+    }
+
+    fn push_cookie(&self, cookie: Cookie) {
+        self.headers().borrow_mut().get_mut::<SetCookie>().unwrap().push(cookie)
     }
 
     fn done(&self) {
@@ -140,14 +157,6 @@ impl Response {
         &self.resp.as_ref().unwrap()
     }
 
-    fn headers(&self) -> Ref<Headers> {
-        self.resp().headers()
-    }
-
-    fn headers_mut(&self) -> RefMut<Headers> {
-        self.resp().headers_mut()
-    }
-
     /// Sets the status code of this response.
     pub fn status(&mut self, status: Status) -> &mut Self {
         self.resp().status(status);
@@ -177,13 +186,13 @@ impl Response {
 
     /// Sets the given header.
     pub fn header<H: Header>(&mut self, header: H) -> &mut Self {
-        self.headers_mut().set(header);
+        self.resp().header(header);
         self
     }
 
     /// Sets the given header with raw strings.
     pub fn header_raw<K: Into<Cow<'static, str>> + Debug, V: Into<Vec<u8>>>(&mut self, name: K, value: V) -> &mut Self {
-        self.headers_mut().set_raw(name, vec![value.into()]);
+        self.resp().header_raw(name, vec![value.into()]);
         self
     }
 
@@ -225,7 +234,7 @@ impl Response {
     /// Known extensions are htm, html, jpg, jpeg, png, js, css.
     /// If the file does not exist, this method sends a 404 Not Found response.
     pub fn send_file<P: AsRef<Path>>(mut self, path: P) {
-        if !self.headers().has::<ContentType>() {
+        if !self.resp().has_header::<ContentType>() {
             let extension = path.as_ref().extension();
             if let Some(ext) = extension {
                 let content_type = match ext.to_string_lossy().as_ref() {
@@ -238,7 +247,7 @@ impl Response {
                 };
 
                 if let Some(content_type) = content_type {
-                    self.headers_mut().set(content_type);
+                    self.resp().header(content_type);
                 }
             }
         }
@@ -277,10 +286,10 @@ impl Response {
         let mut cookie = Cookie::new(name.to_owned(), value.to_owned());
         set_options.map(|f| f(&mut cookie));
 
-        if self.headers().has::<SetCookie>() {
-            self.headers_mut().get_mut::<SetCookie>().unwrap().push(cookie)
+        if self.resp().has_header::<SetCookie>() {
+            self.resp().push_cookie(cookie)
         } else {
-            self.headers_mut().set(SetCookie(vec![cookie]))
+            self.resp().header(SetCookie(vec![cookie]))
         }
     }
 }
