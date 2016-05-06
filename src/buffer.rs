@@ -1,6 +1,7 @@
 use hyper::Next;
 use std::io::{ErrorKind, Read, Write};
 
+#[derive(Debug)]
 pub struct Buffer {
     content: Vec<u8>,
     pos: usize,

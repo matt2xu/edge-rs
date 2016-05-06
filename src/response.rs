@@ -18,14 +18,17 @@ use std::path::Path;
 
 use std::cell::{Ref, RefMut, RefCell};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use buffer::Buffer;
 
+#[derive(Debug)]
 pub struct Resp {
     status: Option<RefCell<Status>>,
     headers: Option<RefCell<Headers>>,
     body: Option<RefCell<Buffer>>,
-    notify: RefCell<bool>,
+
+    notify: AtomicBool,
     ctrl: Control
 }
 
@@ -37,7 +40,7 @@ impl Resp {
             status: Some(RefCell::new(Status::Ok)),
             headers: Some(RefCell::new(Headers::default())),
             body: Some(RefCell::new(Buffer::new())),
-            notify: RefCell::new(false),
+            notify: AtomicBool::new(false),
             ctrl: ctrl
         }
     }
@@ -48,9 +51,6 @@ impl Resp {
 
     fn append<D: AsRef<[u8]>>(&self, content: D) {
         self.body.as_ref().unwrap().borrow_mut().append(content.as_ref());
-        if *self.notify.borrow() {
-            self.ctrl.ready(Next::write()).unwrap();
-        }
     }
 
     fn send<D: Into<Vec<u8>>>(&self, content: D) {
@@ -76,23 +76,43 @@ impl Resp {
     }
 
     fn done(&self) {
-        if *self.notify.borrow() {
+        if self.notify.load(Ordering::Acquire) {
             self.ctrl.ready(Next::write()).unwrap();
         }
     }
 
     pub fn set_notify(&self) {
-        *self.notify.borrow_mut() = true;
+        self.notify.store(true, Ordering::Release);
     }
 }
 
+/// This represents the response that will be sent back to the application.
+///
+/// Includes a status code (default 200 OK), headers, and a body.
+/// The response can be updated and sent back immediately in a synchronous way,
+/// or deferred pending some computation (asynchronous mode).
+///
+/// The response is sent when it is dropped.
 pub struct Response {
-    resp: Arc<Resp>
+    resp: Option<Arc<Resp>>
 }
 
 impl Drop for Response {
     fn drop(&mut self) {
-        self.resp.done()
+        // this is to make sure that we remove this Response's strong reference to Resp
+        // *before* we notify the handler, so the call to Arc::get_mut succeeds
+        let resp = self.resp.as_ref().unwrap().as_ref() as *const Resp;
+
+        // drop Arc
+        {
+            self.resp.take().unwrap();
+        }
+
+        // no worries: Resp is not dropped when the Arc is dropped,
+        // because the handler outlives us, therefore the pointer is always valid here.
+        unsafe {
+            (*resp).done();
+        }
     }
 }
 
@@ -110,23 +130,27 @@ fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
 
 pub fn new(resp: &Arc<Resp>) -> Response {
     Response {
-        resp: resp.clone()
+        resp: Some(resp.clone())
     }
 }
 
 impl Response {
 
+    fn resp(&self) -> &Resp {
+        &self.resp.as_ref().unwrap()
+    }
+
     fn headers(&self) -> Ref<Headers> {
-        self.resp.headers()
+        self.resp().headers()
     }
 
     fn headers_mut(&self) -> RefMut<Headers> {
-        self.resp.headers_mut()
+        self.resp().headers_mut()
     }
 
     /// Sets the status code of this response.
     pub fn status(&mut self, status: Status) -> &mut Self {
-        self.resp.status(status);
+        self.resp().status(status);
         self
     }
 
@@ -169,6 +193,7 @@ impl Response {
         self.len(0);
     }
 
+    /// Renders the template at the given path using the given data.
     pub fn render<P: AsRef<Path>, T: ToJson>(self, path: P, data: T) {
         let mut handlebars = Handlebars::new();
         let path = path.as_ref();
@@ -183,16 +208,16 @@ impl Response {
     /// Sends the given content and ends this response.
     /// Status defaults to 200 Ok, headers must have been set before this method is called.
     pub fn send<D: Into<Vec<u8>>>(mut self, content: D) {
-        self.resp.send(content);
-        let length = self.resp.len();
+        self.resp().send(content);
+        let length = self.resp().len();
         self.len(length as u64);
     }
 
     /// Sends the given content and ends this response.
     /// Status defaults to 200 Ok, headers must have been set before this method is called.
     pub fn append<D: AsRef<[u8]>>(&mut self, content: D) {
-        self.resp.append(content);
-        let length = self.resp.len() as u64;
+        self.resp().append(content);
+        let length = self.resp().len() as u64;
         self.len(length);
     }
 

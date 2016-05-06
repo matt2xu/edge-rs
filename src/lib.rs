@@ -249,6 +249,7 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
             }
         }
 
+        // move body to the request
         request::set_body(self.request.as_mut(), self.body.take());
         self.callback()
     }
