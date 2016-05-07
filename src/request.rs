@@ -12,9 +12,12 @@ use hyper::server::Request as HttpRequest;
 
 use std::collections::BTreeMap;
 use std::io::{Error, ErrorKind, Result};
+use std::result::Result as StdResult;
 use std::slice::Iter;
 
 use buffer::Buffer;
+
+use url::{ParseError, Url};
 
 /// A request, with a path, query, and fragment (accessor methods not yet implemented for the last two).
 ///
@@ -29,11 +32,16 @@ pub struct Request {
     body: Option<Buffer>
 }
 
-pub fn new(inner: HttpRequest) -> url::ParseResult<Request> {
+pub fn new(inner: HttpRequest) -> StdResult<Request, ParseError> {
     let (path, query, fragment) = match *inner.uri() {
-        AbsolutePath(ref path) => match url::parse_path(path) {
-            Ok(res) => res,
-            Err(e) => return Err(e)
+        AbsolutePath(ref path) => {
+            let base = Url::parse("http://localhost").unwrap();
+            match Url::options().base_url(Some(&base)).parse(path) {
+                Ok(url) => (url.path_segments().unwrap().map(|s| s.to_string()).collect(),
+                    url.query().map(|s| s.to_string()),
+                    url.fragment().map(|s| s.to_string())),
+                Err(e) => return Err(e)
+            }
         },
         Star => (vec!["*".to_owned()], None, None),
         _ => panic!("unsupported request URI")
@@ -76,8 +84,10 @@ impl Request {
         let body = try!(self.body());
 
         match self.headers().get::<ContentType>() {
-            Some(&ContentType(Mime(TopLevel::Application, SubLevel::WwwFormUrlEncoded, _))) =>
-                Ok(url::form_urlencoded::parse(body)),
+            Some(&ContentType(Mime(TopLevel::Application, SubLevel::WwwFormUrlEncoded, _))) => {
+                let parse = url::form_urlencoded::parse(body);
+                Ok(parse.into_owned().collect())
+            }
             Some(_) => Err(Error::new(ErrorKind::InvalidInput, "invalid Content-Type, expected application/x-www-form-urlencoded")),
             None => Err(Error::new(ErrorKind::InvalidInput, "missing Content-Type header"))
         }
