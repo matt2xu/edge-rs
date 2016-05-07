@@ -161,7 +161,7 @@ pub struct EdgeHandler<T: Send + Sync> {
 
     request: Option<Request>,
     body: Option<Buffer>,
-    resp: Arc<Resp>
+    resp: Option<Arc<Resp>>
 }
 
 impl<T: 'static + Send + Sync> HandlerFactory<HttpStream> for Edge<T> {
@@ -174,9 +174,16 @@ impl<T: 'static + Send + Sync> HandlerFactory<HttpStream> for Edge<T> {
 
             request: None,
             body: None,
-            resp: Arc::new(Resp::new(control))
+            resp: Some(Arc::new(Resp::new(control)))
         }
     }
+}
+
+fn is_response_done(resp_opt: &mut Option<Arc<Resp>>) -> bool {
+    if let Some(ref mut arc) = *resp_opt {
+        return Arc::get_mut(arc).is_some();
+    }
+    false
 }
 
 impl<T: 'static + Send + Sync> EdgeHandler<T> {
@@ -194,13 +201,13 @@ impl<T: 'static + Send + Sync> EdgeHandler<T> {
             res.send(format!("not found: {:?}", req.path()));
         }
 
-        if Arc::get_mut(&mut self.resp).is_some() {
+        if is_response_done(&mut self.resp) {
             println!("response done, return Next::write after callback");
             Next::write()
         } else {
             // otherwise we ask the Response to notify us, and wait
             println!("response not done, return Next::wait after callback");
-            self.resp.set_notify();
+            response::set_notify(&self.resp);
             Next::wait()
         }
     }
@@ -258,7 +265,7 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
         println!("on_response");
 
         // we got here from callback directly or Resp notified the Control
-        let resp = Arc::get_mut(&mut self.resp).unwrap();
+        let resp = Arc::try_unwrap(self.resp.take().unwrap()).unwrap();
 
         let (status, headers, body) = resp.deconstruct();
         res.set_status(status);

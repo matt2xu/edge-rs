@@ -24,9 +24,9 @@ use buffer::Buffer;
 
 #[derive(Debug)]
 pub struct Resp {
-    status: Option<RefCell<Status>>,
-    headers: Option<RefCell<Headers>>,
-    body: Option<RefCell<Buffer>>,
+    status: RefCell<Status>,
+    headers: RefCell<Headers>,
+    body: RefCell<Buffer>,
 
     notify: AtomicBool,
     ctrl: Control
@@ -38,58 +38,51 @@ unsafe impl Sync for Resp {}
 impl Resp {
     pub fn new(ctrl: Control) -> Resp {
         Resp {
-            status: Some(RefCell::new(Status::Ok)),
-            headers: Some(RefCell::new(Headers::default())),
-            body: Some(RefCell::new(Buffer::new())),
+            status: RefCell::new(Status::Ok),
+            headers: RefCell::new(Headers::default()),
+            body: RefCell::new(Buffer::new()),
+
             notify: AtomicBool::new(false),
             ctrl: ctrl
         }
     }
 
-    fn body(&self) -> &RefCell<Buffer> {
-        self.body.as_ref().unwrap()
-    }
-
-    fn len(&self) -> usize {
-        self.body().borrow().len()
-    }
-
-    fn append<D: AsRef<[u8]>>(&self, content: D) {
-        self.body().borrow_mut().append(content.as_ref());
-    }
-
-    fn send<D: Into<Vec<u8>>>(&self, content: D) {
-        self.body().borrow_mut().send(content);
-    }
-
-    pub fn deconstruct(&mut self) -> (Status, Headers, Buffer) {
-        (self.status.take().unwrap().into_inner(),
-        self.headers.take().unwrap().into_inner(),
-        self.body.take().unwrap().into_inner())
-    }
-
     fn status(&self, status: Status) {
-        *self.status.as_ref().unwrap().borrow_mut() = status;
-    }
-
-    fn headers(&self) -> &RefCell<Headers> {
-        self.headers.as_ref().unwrap()
+        *self.status.borrow_mut() = status;
     }
 
     fn has_header<H: Header>(&self) -> bool {
-        self.headers().borrow().has::<H>()
+        self.headers.borrow().has::<H>()
     }
 
     fn header<H: Header>(&self, header: H) {
-        self.headers().borrow_mut().set(header);
+        self.headers.borrow_mut().set(header);
     }
 
     fn header_raw<K: Into<Cow<'static, str>> + Debug>(&self, name: K, value: Vec<Vec<u8>>) {
-        self.headers().borrow_mut().set_raw(name, value);
+        self.headers.borrow_mut().set_raw(name, value);
     }
 
     fn push_cookie(&self, cookie: Cookie) {
-        self.headers().borrow_mut().get_mut::<SetCookie>().unwrap().push(cookie)
+        self.headers.borrow_mut().get_mut::<SetCookie>().unwrap().push(cookie)
+    }
+
+    fn len(&self) -> usize {
+        self.body.borrow().len()
+    }
+
+    fn append<D: AsRef<[u8]>>(&self, content: D) {
+        self.body.borrow_mut().append(content.as_ref());
+    }
+
+    fn send<D: Into<Vec<u8>>>(&self, content: D) {
+        self.body.borrow_mut().send(content);
+    }
+
+    pub fn deconstruct(self) -> (Status, Headers, Buffer) {
+        (self.status.into_inner(),
+        self.headers.into_inner(),
+        self.body.into_inner())
     }
 
     fn done(&self) {
@@ -97,9 +90,11 @@ impl Resp {
             self.ctrl.ready(Next::write()).unwrap();
         }
     }
+}
 
-    pub fn set_notify(&self) {
-        self.notify.store(true, Ordering::Release);
+pub fn set_notify(resp: &Option<Arc<Resp>>) {
+    if let Some(ref arc) = *resp {
+        arc.notify.store(true, Ordering::Release);   
     }
 }
 
@@ -145,9 +140,9 @@ fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
     Ok(())
 }
 
-pub fn new(resp: &Arc<Resp>) -> Response {
+pub fn new(resp: &Option<Arc<Resp>>) -> Response {
     Response {
-        resp: Some(resp.clone())
+        resp: Some(resp.as_ref().unwrap().clone())
     }
 }
 
