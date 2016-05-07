@@ -1,10 +1,11 @@
-//! Edge is a Web framework that aims to be simple to use, with the most common things you need out of the box.
-//! There are no plugins, the framework is not modular, but it is simple to use and easy to contribute to.
+//! Edge is a Web framework that aims to be simple to use and powerful, with the most common things
+//! you need out of the box; we focus on integration rather than modularity. It supports both
+//! synchronous and asynchronous style request handling, see below for examples.
 //!
 //! The crate exports the things that you often need from dependencies, such as headers (from `hyper`),
 //! cookies (from `cookie`) and JSON serialization (from `serde_json`).
 //!
-//! *Warning*: this is a very early version, and the API is not fully stable yet.
+//! *Warning*: this is an early version, and the API is not fully stable yet.
 //!
 //! ## Overview
 //!
@@ -14,7 +15,8 @@
 //! delegates calls to the appropriate methods.
 //!
 //! Note that the state cannot be mutated, as is usual in Rust (and enforced by the underlying HTTP server
-//! this crate uses, a.k.a. Hyper). Any shared mutable variable must be wrapped in a `Mutex`.
+//! this crate uses, a.k.a. Hyper). Use appropriate concurrent data structures if you need
+//! shared mutable variables: locks, mutexes, channels, etc.
 //!
 //! ## Why another Web framework in Rust?
 //!
@@ -29,36 +31,131 @@
 //!
 //! ## Hello World
 //!
+//! The most basic application: no state, a single page that prints Hello, world!
+//!
 //! ```no_run
 //! extern crate edge;
 //!
-//! use edge::{Container, Request, Response, Status};
-//! use edge::header::Server;
-//! use std::io::Result;
-//! use std::sync::Mutex;
+//! use edge::{Edge, Request, Response};
 //!
-//! struct MyApp {
-//!     version: &'static str,
-//!     counter: Mutex<u32>
-//! }
-//!
+//! struct MyApp;
 //! impl MyApp {
-//!     fn home(&self, _req: &mut Request, mut res: Response) -> Result<()> {
-//!         let cnt = {
-//!             let mut counter = self.counter.lock().unwrap();
-//!             *counter += 1;
-//!             *counter
-//!         };
-//!
-//!         res.status(Status::Ok).content_type("text/plain");
-//!         res.header(Server(format!("Edge version {}", self.version)));
-//!         res.send(format!("Hello, world! {} visits", cnt))
+//!     fn hello(&self, _req: &mut Request, mut res: Response) {
+//!         res.content_type("text/plain");
+//!         res.send("Hello, world!")
 //!     }
 //! }
 //!
 //! fn main() {
-//!     let app = MyApp { version: "0.1", counter: Mutex::new(0) };
-//!     let mut cter = Container::new(app);
+//!     let mut cter = Edge::new(MyApp);
+//!     cter.get("/", MyApp::hello);
+//!     cter.start("0.0.0.0:3000").unwrap();
+//! }
+//! ```
+//!
+//! ## Asynchronous handling
+//!
+//! Under the hood, Edge uses the asynchronous version of Hyper. This means that to get the maximum
+//! performance, you should avoid waiting in a handler, so that other requests
+//! can be served as soon as possible. In that example, the handler waits in a separate thread before sending
+//! the response.
+//!
+//! ```no_run
+//! extern crate edge;
+//!
+//! use edge::{Edge, Request, Response};
+//! use std::thread;
+//! use std::time::Duration;
+//!
+//! struct MyApp;
+//! impl MyApp {
+//!     fn hello(&self, _req: &mut Request, mut res: Response) {
+//!         thread::spawn(move || {
+//!             println!("waiting 1 second");
+//!             thread::sleep(Duration::from_secs(1));
+//!
+//!             res.content_type("text/plain");
+//!             res.send("Hello, world!")
+//!         });
+//!
+//!         // the handler returns immediately without waiting for the thread
+//!     }
+//! }
+//!
+//! fn main() {
+//!     let mut cter = Edge::new(MyApp);
+//!     cter.get("/", MyApp::hello);
+//!     cter.start("0.0.0.0:3000").unwrap();
+//! }
+//! ```
+//!
+//! ## Templating
+//!
+//! Here our application has a version, still a single handler except this time
+//! it accepts any page name, and renders a Handlebars template.  We're also
+//! setting a custom Server header.
+//!
+//! ```no_run
+//! extern crate edge;
+//!
+//! use edge::{Edge, Request, Response, Status};
+//! use edge::header::Server;
+//! use std::collections::BTreeMap;
+//!
+//! struct MyApp {
+//!     version: &'static str
+//! }
+//!
+//! impl MyApp {
+//!     fn page_handler(&self, req: &mut Request, mut res: Response) {
+//!         let mut data = BTreeMap::new();
+//!         data.insert("title", req.param("page").unwrap());
+//!         data.insert("version", self.version);
+//!
+//!         res.content_type("text/html").header(Server(format!("Edge version {}", self.version)));
+//!         res.render("views/page.hbs", data)
+//!     }
+//! }
+//!
+//! fn main() {
+//!     let app = MyApp { version: "0.1" };
+//!     let mut cter = Edge::new(app);
+//!     cter.get("/:page", MyApp::page_handler);
+//!     cter.start("0.0.0.0:3000").unwrap();
+//! }
+//! ```
+//!
+//! ## Using a shared mutable counter
+//!
+//! In this example, we use an atomic integer to track a counter. This shows a very basic
+//! kind of shared state for a handler. In practice, it's best to avoid using blocking
+//! mechanisms (locks, mutexes) in a handler directly. Prefer non-blocking calls,
+//! like channels' try_recv, or move blocking code in a separate thread,
+//! see the example for asynchronous handling above.
+//!
+//! ```no_run
+//! extern crate edge;
+//!
+//! use edge::{Edge, Request, Response, Status};
+//! use std::sync::atomic::{AtomicUsize, Ordering};
+//!
+//! struct MyApp {
+//!     counter: AtomicUsize
+//! }
+//!
+//! impl MyApp {
+//!     fn home(&self, _req: &mut Request, mut res: Response) {
+//!         let visits = self.counter.load(Ordering::Relaxed);
+//!         self.counter.store(visits + 1, Ordering::Relaxed);
+//!
+//!         res.status(Status::Ok).content_type("text/plain");
+//!         res.send(format!("Hello, world! {} visits", visits))
+//!     }
+//! }
+//!
+//! fn main() {
+//!     let app = MyApp { counter: AtomicUsize::new(0) };
+//!     let mut cter = Edge::new(app);
 //!     cter.get("/", MyApp::home);
 //!     cter.start("0.0.0.0:3000").unwrap();
 //! }

@@ -63,10 +63,10 @@ impl MyApp {
         match form.iter().find(|pair| pair.0 == "username").map(|pair| &pair.1) {
             None => (),
             Some(ref username) => {
-                res.cookie("name", &username, Some(|cookie: &mut Cookie| {
-                    cookie.domain = Some("localhost".to_string());
-                    cookie.httponly = true;
-                }));
+                let mut cookie = Cookie::new("name".to_owned(), username.to_string());
+                cookie.domain = Some("localhost".to_string());
+                cookie.httponly = true;
+                res.cookie(cookie);
             }
         }
 
