@@ -217,8 +217,8 @@ impl Response {
         self.len(length as u64);
     }
 
-    /// Sends the given content and ends this response.
-    /// Status defaults to 200 Ok, headers must have been set before this method is called.
+    /// Appends the given content to this response's body.
+    /// Will change to support asynchronous use case.
     pub fn append<D: AsRef<[u8]>>(&mut self, content: D) {
         self.resp().append(content);
         let length = self.resp().len() as u64;
@@ -267,6 +267,7 @@ impl Response {
         }
     }
 
+    /*
     /// Writes the body of this response using the given source function.
     pub fn stream<F, R>(&mut self, source: F) -> Result<()> where F: FnOnce(&mut Write) -> Result<R> {
         //let mut streaming = try!(self.inner.start());
@@ -274,13 +275,10 @@ impl Response {
         //streaming.end()
         Ok(())
     }
+    */
 
-    /// Sets a cookie with the given name and value.
-    /// If set, the set_options function will be called to update the cookie's options.
-    pub fn cookie<F>(&mut self, name: &str, value: &str, set_options: Option<F>) where F: Fn(&mut Cookie) {
-        let mut cookie = Cookie::new(name.to_owned(), value.to_owned());
-        set_options.map(|f| f(&mut cookie));
-
+    /// Sets the given cookie.
+    pub fn cookie(&mut self, cookie: Cookie) {
         if self.resp().has_header::<SetCookie>() {
             self.resp().push_cookie(cookie)
         } else {
