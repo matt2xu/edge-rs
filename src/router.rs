@@ -2,8 +2,9 @@
 use hyper::Method;
 use std::collections::{BTreeMap, HashMap};
 
+use request;
 use request::Request;
-use Response;
+use response::Response;
 
 /// Signature for a callback method
 pub type Callback<T> = fn(&T, &mut Request, Response);
@@ -55,7 +56,7 @@ impl<T> Router<T> {
                 }
 
                 if it_route.next().is_none() {
-                    req.set_params(params);
+                    request::set_params(req, params);
                     return Some(*callback);
                 }
 

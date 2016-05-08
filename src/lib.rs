@@ -1,11 +1,11 @@
-//! Edge is a Web framework that aims to be simple to use and powerful, with the most common things
-//! you need out of the box; we focus on integration rather than modularity. It supports both
-//! synchronous and asynchronous style request handling, see below for examples.
+//! Edge is a Web framework that is simple to use, with the most common things
+//! you need out of the box, and flexible, supporting both synchronous and asynchronous
+//! request handling styles; see below for examples.
 //!
 //! The crate exports the things that you often need from dependencies, such as headers (from `hyper`),
 //! cookies (from `cookie`) and JSON serialization (from `serde_json`).
 //!
-//! *Warning*: this is an early version, and the API is not fully stable yet.
+//! Please note that this is an early version, and the API is likely to evolve.
 //!
 //! ## Overview
 //!
@@ -25,6 +25,7 @@
 //!   1. everything I needed out of the box, like cookies and forms and templating, without having to dig up third-party crates,
 //!   1. the possibility to describe my application as a struct, so that callbacks could use a state (even if just for configuration).
 //!
+//! We focus on integration rather than modularity.
 //! I hope you like this crate, if it misses something to fit your needs just open an issue or make a pull request!
 //!
 //! And please keep in mind that the framework is in a (very) early stage :-)
@@ -191,9 +192,10 @@ mod response;
 
 pub use request::Request;
 pub use response::Response;
+pub use router::Callback;
 
 use buffer::Buffer;
-use router::{Router, Callback};
+use router::Router;
 use response::Resp;
 
 /// Structure for an Edge application.
@@ -212,7 +214,7 @@ impl<T: 'static + Send + Sync> Edge<T> {
         }
     }
 
-    /// Registers a callback for the given path for GE requests.
+    /// Registers a callback for the given path for GET requests.
     pub fn get(&mut self, path: &str, callback: Callback<T>) {
         self.insert(Get, path, callback);
     }

@@ -63,7 +63,7 @@ pub fn set_body(request: Option<&mut Request>, body: Option<Buffer>) {
 }
 
 impl Request {
-    /// Reads this request's body until the end, and returns it as a vector of bytes.
+    /// Returns this request's body as a vector of bytes.
     pub fn body(&self) -> Result<&[u8]> {
         match self.body {
             Some(ref buffer) => Ok(buffer.as_ref()),
@@ -121,9 +121,9 @@ impl Request {
     pub fn fragment(&self) -> Option<&str> {
         self.fragment.as_ref().map(String::as_str)
     }
+}
 
-    /// Sets the parameters declared by the route that matched the URL of this request.
-    pub fn set_params(&mut self, params: BTreeMap<String, String>) {
-        self.params = Some(params);
-    }
+/// Sets the parameters declared by the route that matched the URL of this request.
+pub fn set_params(request: &mut Request, params: BTreeMap<String, String>) {
+    request.params = Some(params);
 }
