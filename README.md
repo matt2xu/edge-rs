@@ -15,6 +15,16 @@ cookies (from `cookie`) and JSON serialization (from `serde_json`).
 
 Please note that this is an early version, and the API is likely to evolve.
 
+## Use Edge
+
+In your Cargo.toml, add:
+
+```
+[dependencies.edge]
+git = "https://github.com/matt2xu/edge-rs.git"
+tag = "v0.1.0"
+```
+
 ## Hello World
 
 The most basic application: no state, a single page that prints Hello, world!
