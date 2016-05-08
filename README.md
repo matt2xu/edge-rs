@@ -19,7 +19,7 @@ Please note that this is an early version, and the API is likely to evolve.
 
 In your Cargo.toml, add:
 
-```
+```toml
 [dependencies.edge]
 git = "https://github.com/matt2xu/edge-rs.git"
 tag = "v0.1.0"
