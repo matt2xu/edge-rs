@@ -58,15 +58,15 @@
     Object(<a class='struct' href='https://doc.rust-lang.org/nightly/collections/btree/map/struct.BTreeMap.html' title='collections::btree::map::BTreeMap'>BTreeMap</a>&lt;<a class='struct' href='https://doc.rust-lang.org/nightly/collections/string/struct.String.html' title='collections::string::String'>String</a>, <a class='enum' href='../../edge/value/enum.Value.html' title='edge::value::Value'>Value</a>&gt;),
 }</pre><div class='docblock'><p>Represents a JSON value</p>
 </div><h2 class='variants'>Variants</h2>
-<table><tr><td id='variant.Null'><code>Null</code></td><td><div class='docblock'><p>Represents a JSON null value</p>
-</div></td></tr><tr><td id='variant.Bool'><code>Bool</code></td><td><div class='docblock'><p>Represents a JSON Boolean</p>
-</div></td></tr><tr><td id='variant.I64'><code>I64</code></td><td><div class='docblock'><p>Represents a JSON signed integer</p>
-</div></td></tr><tr><td id='variant.U64'><code>U64</code></td><td><div class='docblock'><p>Represents a JSON unsigned integer</p>
-</div></td></tr><tr><td id='variant.F64'><code>F64</code></td><td><div class='docblock'><p>Represents a JSON floating point number</p>
-</div></td></tr><tr><td id='variant.String'><code>String</code></td><td><div class='docblock'><p>Represents a JSON string</p>
-</div></td></tr><tr><td id='variant.Array'><code>Array</code></td><td><div class='docblock'><p>Represents a JSON array</p>
-</div></td></tr><tr><td id='variant.Object'><code>Object</code></td><td><div class='docblock'><p>Represents a JSON object</p>
-</div></td></tr></table><h2 id='methods'>Methods</h2><h3 class='impl'><code>impl <a class='enum' href='../../edge/value/enum.Value.html' title='edge::value::Value'>Value</a></code></h3><div class='impl-items'><h4 id='method.find' class='method'><code>fn <a href='#method.find' class='fnname'>find</a>(&amp;'a self, key: &amp;<a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.str.html'>str</a>) -&gt; <a class='enum' href='https://doc.rust-lang.org/nightly/core/option/enum.Option.html' title='core::option::Option'>Option</a>&lt;&amp;'a <a class='enum' href='../../edge/value/enum.Value.html' title='edge::value::Value'>Value</a>&gt;</code></h4>
+<table class='variants_table'><tr><td id='variant.Null'><code>Null</code></td><td><div class='docblock'><p>Represents a JSON null value</p>
+</div></td><td></td></tr><tr><td id='variant.Bool'><code>Bool</code></td><td><div class='docblock'><p>Represents a JSON Boolean</p>
+</div></td><td></td></tr><tr><td id='variant.I64'><code>I64</code></td><td><div class='docblock'><p>Represents a JSON signed integer</p>
+</div></td><td></td></tr><tr><td id='variant.U64'><code>U64</code></td><td><div class='docblock'><p>Represents a JSON unsigned integer</p>
+</div></td><td></td></tr><tr><td id='variant.F64'><code>F64</code></td><td><div class='docblock'><p>Represents a JSON floating point number</p>
+</div></td><td></td></tr><tr><td id='variant.String'><code>String</code></td><td><div class='docblock'><p>Represents a JSON string</p>
+</div></td><td></td></tr><tr><td id='variant.Array'><code>Array</code></td><td><div class='docblock'><p>Represents a JSON array</p>
+</div></td><td></td></tr><tr><td id='variant.Object'><code>Object</code></td><td><div class='docblock'><p>Represents a JSON object</p>
+</div></td><td></td></tr></table><h2 id='methods'>Methods</h2><h3 class='impl'><code>impl <a class='enum' href='../../edge/value/enum.Value.html' title='edge::value::Value'>Value</a></code></h3><div class='impl-items'><h4 id='method.find' class='method'><code>fn <a href='#method.find' class='fnname'>find</a>(&amp;'a self, key: &amp;<a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.str.html'>str</a>) -&gt; <a class='enum' href='https://doc.rust-lang.org/nightly/core/option/enum.Option.html' title='core::option::Option'>Option</a>&lt;&amp;'a <a class='enum' href='../../edge/value/enum.Value.html' title='edge::value::Value'>Value</a>&gt;</code></h4>
 <div class='docblock'><p>If the <code>Value</code> is an Object, returns the value associated with the provided key.
 Otherwise, returns None.</p>
 </div><h4 id='method.find_path' class='method'><code>fn <a href='#method.find_path' class='fnname'>find_path</a>(&amp;'a self, keys: <a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.slice.html'>&amp;[</a>&amp;<a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.str.html'>str</a><a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.slice.html'>]</a>) -&gt; <a class='enum' href='https://doc.rust-lang.org/nightly/core/option/enum.Option.html' title='core::option::Option'>Option</a>&lt;&amp;'a <a class='enum' href='../../edge/value/enum.Value.html' title='edge::value::Value'>Value</a>&gt;</code></h4>
@@ -79,6 +79,7 @@ Otherwise, it will return the <code>Value</code> associated with the final key.<
 <p>This is a convenience method that splits the path by <code>&#39;.&#39;</code>
 and then feeds the sequence of keys into the <code>find_path</code>
 method.</p>
+
 <pre class='rust rust-example-rendered'>
 <span class='kw'>let</span> <span class='ident'>obj</span>: <span class='ident'>Value</span> <span class='op'>=</span> <span class='ident'>json</span>::<span class='ident'>from_str</span>(<span class='string'>r#&quot;{&quot;x&quot;: {&quot;a&quot;: 1}}&quot;#</span>).<span class='ident'>unwrap</span>();
 
@@ -141,7 +142,7 @@ Returns None otherwise.</p>
 </div><h3 id='derived_implementations'>Derived Implementations </h3><h3 class='impl'><code>impl <a class='trait' href='https://doc.rust-lang.org/nightly/core/cmp/trait.PartialEq.html' title='core::cmp::PartialEq'>PartialEq</a>&lt;<a class='enum' href='../../edge/value/enum.Value.html' title='edge::value::Value'>Value</a>&gt; for <a class='enum' href='../../edge/value/enum.Value.html' title='edge::value::Value'>Value</a></code></h3><div class='impl-items'><h4 id='method.eq' class='method'><code>fn <a href='https://doc.rust-lang.org/nightly/core/cmp/trait.PartialEq.html#method.eq' class='fnname'>eq</a>(&amp;self, __arg_0: &amp;<a class='enum' href='../../edge/value/enum.Value.html' title='edge::value::Value'>Value</a>) -&gt; <a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.bool.html'>bool</a></code></h4>
 <h4 id='method.ne' class='method'><code>fn <a href='https://doc.rust-lang.org/nightly/core/cmp/trait.PartialEq.html#method.ne' class='fnname'>ne</a>(&amp;self, __arg_0: &amp;<a class='enum' href='../../edge/value/enum.Value.html' title='edge::value::Value'>Value</a>) -&gt; <a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.bool.html'>bool</a></code></h4>
 </div><h3 class='impl'><code>impl <a class='trait' href='https://doc.rust-lang.org/nightly/core/clone/trait.Clone.html' title='core::clone::Clone'>Clone</a> for <a class='enum' href='../../edge/value/enum.Value.html' title='edge::value::Value'>Value</a></code></h3><div class='impl-items'><h4 id='method.clone' class='method'><code>fn <a href='https://doc.rust-lang.org/nightly/core/clone/trait.Clone.html#method.clone' class='fnname'>clone</a>(&amp;self) -&gt; <a class='enum' href='../../edge/value/enum.Value.html' title='edge::value::Value'>Value</a></code></h4>
-<h4 id='method.clone_from' class='method'><code>fn <a href='https://doc.rust-lang.org/nightly/core/clone/trait.Clone.html#method.clone_from' class='fnname'>clone_from</a>(&amp;mut self, source: &amp;Self)</code></h4>
+<h4 id='method.clone_from' class='method'><span class="since">1.0.0</span><code>fn <a href='https://doc.rust-lang.org/nightly/core/clone/trait.Clone.html#method.clone_from' class='fnname'>clone_from</a>(&amp;mut self, source: &amp;Self)</code></h4>
 </div></section>
     <section id='search' class="content hidden"></section>
 
@@ -185,7 +186,7 @@ Returns None otherwise.</p>
 
                 <p>
                     Search functions by type signature (e.g.
-                    <code>vec -> usize</code>)
+                    <code>vec -> usize</code> or <code>* -> vec</code>)
                 </p>
             </div>
         </div>

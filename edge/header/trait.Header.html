@@ -46,10 +46,11 @@
             <a id="toggle-all-docs" href="javascript:void(0)" title="collapse all docs">
                 [<span class='inner'>&#x2212;</span>]
             </a>
-        </span><a id='src-4945' class='srclink' href='https://hyperium.github.io/hyper/hyper/header/trait.Header.html?gotosrc=4945' title='goto source code'>[src]</a></span></h1>
-<pre class='rust trait'>pub trait Header: <a class='trait' href='https://doc.rust-lang.org/nightly/core/marker/trait.Send.html' title='core::marker::Send'>Send</a> + <a class='trait' href='https://doc.rust-lang.org/nightly/core/marker/trait.Sync.html' title='core::marker::Sync'>Sync</a> + <a class='trait' href='https://doc.rust-lang.org/nightly/core/clone/trait.Clone.html' title='core::clone::Clone'>Clone</a> + <a class='trait' href='https://doc.rust-lang.org/nightly/core/any/trait.Any.html' title='core::any::Any'>Any</a> {
+        </span><a id='src-5089' class='srclink' href='https://hyperium.github.io/hyper/hyper/header/trait.Header.html?gotosrc=5089' title='goto source code'>[src]</a></span></h1>
+<pre class='rust trait'>pub trait Header: <a class='trait' href='https://doc.rust-lang.org/nightly/core/marker/trait.Send.html' title='core::marker::Send'>Send</a> + <a class='trait' href='https://doc.rust-lang.org/nightly/core/marker/trait.Sync.html' title='core::marker::Sync'>Sync</a> + <a class='trait' href='../../hyper/header/trait.HeaderClone.html' title='hyper::header::HeaderClone'>HeaderClone</a> + <a class='trait' href='https://doc.rust-lang.org/nightly/core/any/trait.Any.html' title='core::any::Any'>Any</a> + Typeable {
     fn <a href='#tymethod.header_name' class='fnname'>header_name</a>() -&gt; &amp;'static <a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.str.html'>str</a>;
     fn <a href='#tymethod.parse_header' class='fnname'>parse_header</a>(raw: <a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.slice.html'>&amp;[</a><a class='struct' href='https://doc.rust-lang.org/nightly/collections/vec/struct.Vec.html' title='collections::vec::Vec'>Vec</a>&lt;<a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.u8.html'>u8</a>&gt;<a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.slice.html'>]</a>) -&gt; <a class='enum' href='https://doc.rust-lang.org/nightly/core/result/enum.Result.html' title='core::result::Result'>Result</a>&lt;Self, <a class='enum' href='https://hyperium.github.io/hyper/hyper/error/enum.Error.html' title='hyper::error::Error'>Error</a>&gt;;
+    fn <a href='#tymethod.fmt_header' class='fnname'>fmt_header</a>(&amp;self, f: &amp;mut <a class='struct' href='https://doc.rust-lang.org/nightly/core/fmt/struct.Formatter.html' title='core::fmt::Formatter'>Formatter</a>) -&gt; <a class='enum' href='https://doc.rust-lang.org/nightly/core/result/enum.Result.html' title='core::result::Result'>Result</a>&lt;<a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.tuple.html'>()</a>, <a class='struct' href='https://doc.rust-lang.org/nightly/core/fmt/struct.Error.html' title='core::fmt::Error'>Error</a>&gt;;
 }</pre><div class='docblock'><p>A trait for any object that will represent a header field and value.</p>
 
 <p>This trait represents the construction and identification of headers,
@@ -67,7 +68,12 @@ and in that case, the slice will have a length greater than 1. However,
 it&#39;s not necessarily the case that a Header is <em>allowed</em> to have more
 than one field value. If that&#39;s the case, you <strong>should</strong> return <code>None</code>
 if <code>raw.len() &gt; 1</code>.</p>
-</div></div>
+</div><h3 id='tymethod.fmt_header' class='method stab '><code>fn <a href='#tymethod.fmt_header' class='fnname'>fmt_header</a>(&amp;self, f: &amp;mut <a class='struct' href='https://doc.rust-lang.org/nightly/core/fmt/struct.Formatter.html' title='core::fmt::Formatter'>Formatter</a>) -&gt; <a class='enum' href='https://doc.rust-lang.org/nightly/core/result/enum.Result.html' title='core::result::Result'>Result</a>&lt;<a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.tuple.html'>()</a>, <a class='struct' href='https://doc.rust-lang.org/nightly/core/fmt/struct.Error.html' title='core::fmt::Error'>Error</a>&gt;</code></h3><div class='docblock'><p>Format a header to be output into a TcpStream.</p>
+
+<p>This method is not allowed to introduce an Err not produced
+by the passed-in Formatter.</p>
+</div></div><h2 id='implementations'>Trait Implementations</h2><h3 class='impl'><code>impl&lt;'a&gt; <a class='trait' href='https://doc.rust-lang.org/nightly/core/fmt/trait.Display.html' title='core::fmt::Display'>Display</a> for &amp;'a <a class='trait' href='../../edge/header/trait.Header.html' title='edge::header::Header'>Header</a> + 'static + <a class='trait' href='https://doc.rust-lang.org/nightly/core/marker/trait.Send.html' title='core::marker::Send'>Send</a> + <a class='trait' href='https://doc.rust-lang.org/nightly/core/marker/trait.Sync.html' title='core::marker::Sync'>Sync</a></code></h3><div class='impl-items'><h4 id='method.fmt' class='method'><code>fn <a href='https://doc.rust-lang.org/nightly/core/fmt/trait.Display.html#method.fmt' class='fnname'>fmt</a>(&amp;self, f: &amp;mut <a class='struct' href='https://doc.rust-lang.org/nightly/core/fmt/struct.Formatter.html' title='core::fmt::Formatter'>Formatter</a>) -&gt; <a class='enum' href='https://doc.rust-lang.org/nightly/core/result/enum.Result.html' title='core::result::Result'>Result</a>&lt;<a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.tuple.html'>()</a>, <a class='struct' href='https://doc.rust-lang.org/nightly/core/fmt/struct.Error.html' title='core::fmt::Error'>Error</a>&gt;</code></h4>
+</div>
         <h2 id='implementors'>Implementors</h2>
         <ul class='item-list' id='implementors-list'>
     <li><code>impl <a class='trait' href='../../edge/header/trait.Header.html' title='edge::header::Header'>Header</a> for <a class='struct' href='../../edge/header/struct.Accept.html' title='edge::header::Accept'>Accept</a></code></li>
@@ -108,6 +114,8 @@ if <code>raw.len() &gt; 1</code>.</p>
 <li><code>impl <a class='trait' href='../../edge/header/trait.Header.html' title='edge::header::Header'>Header</a> for <a class='struct' href='../../edge/header/struct.LastModified.html' title='edge::header::LastModified'>LastModified</a></code></li>
 <li><code>impl <a class='trait' href='../../edge/header/trait.Header.html' title='edge::header::Header'>Header</a> for <a class='struct' href='../../edge/header/struct.Location.html' title='edge::header::Location'>Location</a></code></li>
 <li><code>impl <a class='trait' href='../../edge/header/trait.Header.html' title='edge::header::Header'>Header</a> for <a class='enum' href='../../edge/header/enum.Pragma.html' title='edge::header::Pragma'>Pragma</a></code></li>
+<li><code>impl <a class='trait' href='../../edge/header/trait.Header.html' title='edge::header::Header'>Header</a> for <a class='struct' href='../../edge/header/struct.Prefer.html' title='edge::header::Prefer'>Prefer</a></code></li>
+<li><code>impl <a class='trait' href='../../edge/header/trait.Header.html' title='edge::header::Header'>Header</a> for <a class='struct' href='../../edge/header/struct.PreferenceApplied.html' title='edge::header::PreferenceApplied'>PreferenceApplied</a></code></li>
 <li><code>impl <a class='trait' href='../../edge/header/trait.Header.html' title='edge::header::Header'>Header</a> for <a class='enum' href='../../edge/header/enum.Range.html' title='edge::header::Range'>Range</a></code></li>
 <li><code>impl <a class='trait' href='../../edge/header/trait.Header.html' title='edge::header::Header'>Header</a> for <a class='struct' href='../../edge/header/struct.Referer.html' title='edge::header::Referer'>Referer</a></code></li>
 <li><code>impl <a class='trait' href='../../edge/header/trait.Header.html' title='edge::header::Header'>Header</a> for <a class='struct' href='../../edge/header/struct.Server.html' title='edge::header::Server'>Server</a></code></li>
@@ -162,7 +170,7 @@ if <code>raw.len() &gt; 1</code>.</p>
 
                 <p>
                     Search functions by type signature (e.g.
-                    <code>vec -> usize</code>)
+                    <code>vec -> usize</code> or <code>* -> vec</code>)
                 </p>
             </div>
         </div>

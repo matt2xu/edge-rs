@@ -46,30 +46,32 @@
             <a id="toggle-all-docs" href="javascript:void(0)" title="collapse all docs">
                 [<span class='inner'>&#x2212;</span>]
             </a>
-        </span><a id='src-28' class='srclink' href='../src/edge/lib.rs.html#101-108' title='goto source code'>[src]</a></span></h1>
-<pre class='rust struct'>pub struct Request&lt;'a, 'b&gt; {
+        </span><a id='src-186' class='srclink' href='../src/edge/src/request.rs.html#25-33' title='goto source code'>[src]</a></span></h1>
+<pre class='rust struct'>pub struct Request {
     // some fields omitted
 }</pre><div class='docblock'><p>A request, with a path, query, and fragment (accessor methods not yet implemented for the last two).</p>
 
 <p>Can be queried for the parameters that were matched by the router.</p>
-</div><h2 id='methods'>Methods</h2><h3 class='impl'><code>impl&lt;'a, 'b&gt; <a class='struct' href='../edge/struct.Request.html' title='edge::Request'>Request</a>&lt;'a, 'b&gt;</code></h3><div class='impl-items'><h4 id='method.body' class='method'><code>fn <a href='#method.body' class='fnname'>body</a>(&amp;mut self) -&gt; <a class='type' href='https://doc.rust-lang.org/nightly/std/io/error/type.Result.html' title='std::io::error::Result'>Result</a>&lt;<a class='struct' href='https://doc.rust-lang.org/nightly/collections/vec/struct.Vec.html' title='collections::vec::Vec'>Vec</a>&lt;<a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.u8.html'>u8</a>&gt;&gt;</code></h4>
-<div class='docblock'><p>Reads this request&#39;s body until the end, and returns it as a vector of bytes.</p>
+</div><h2 id='methods'>Methods</h2><h3 class='impl'><code>impl <a class='struct' href='../edge/struct.Request.html' title='edge::Request'>Request</a></code></h3><div class='impl-items'><h4 id='method.body' class='method'><code>fn <a href='#method.body' class='fnname'>body</a>(&amp;self) -&gt; <a class='type' href='https://doc.rust-lang.org/nightly/std/io/error/type.Result.html' title='std::io::error::Result'>Result</a>&lt;<a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.slice.html'>&amp;[</a><a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.u8.html'>u8</a><a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.slice.html'>]</a>&gt;</code></h4>
+<div class='docblock'><p>Returns this request&#39;s body as a vector of bytes.</p>
 </div><h4 id='method.cookies' class='method'><code>fn <a href='#method.cookies' class='fnname'>cookies</a>(&amp;self) -&gt; <a class='struct' href='https://doc.rust-lang.org/nightly/core/slice/struct.Iter.html' title='core::slice::Iter'>Iter</a>&lt;<a class='struct' href='../edge/struct.Cookie.html' title='edge::Cookie'>Cookie</a>&gt;</code></h4>
 <div class='docblock'><p>Returns an iterator over the cookies of this request.</p>
-</div><h4 id='method.form' class='method'><code>fn <a href='#method.form' class='fnname'>form</a>(&amp;mut self) -&gt; <a class='type' href='https://doc.rust-lang.org/nightly/std/io/error/type.Result.html' title='std::io::error::Result'>Result</a>&lt;<a class='struct' href='https://doc.rust-lang.org/nightly/collections/vec/struct.Vec.html' title='collections::vec::Vec'>Vec</a>&lt;<a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.tuple.html'>(<a class='struct' href='https://doc.rust-lang.org/nightly/collections/string/struct.String.html' title='collections::string::String'>String</a>, <a class='struct' href='https://doc.rust-lang.org/nightly/collections/string/struct.String.html' title='collections::string::String'>String</a>)</a>&gt;&gt;</code></h4>
+</div><h4 id='method.form' class='method'><code>fn <a href='#method.form' class='fnname'>form</a>(&amp;mut self) -&gt; <a class='type' href='https://doc.rust-lang.org/nightly/std/io/error/type.Result.html' title='std::io::error::Result'>Result</a>&lt;<a class='struct' href='https://doc.rust-lang.org/nightly/collections/vec/struct.Vec.html' title='collections::vec::Vec'>Vec</a>&lt;<a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.tuple.html'>(</a><a class='struct' href='https://doc.rust-lang.org/nightly/collections/string/struct.String.html' title='collections::string::String'>String</a>, <a class='struct' href='https://doc.rust-lang.org/nightly/collections/string/struct.String.html' title='collections::string::String'>String</a><a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.tuple.html'>)</a>&gt;&gt;</code></h4>
 <div class='docblock'><p>Reads the body of this request, parses it as an application/x-www-form-urlencoded format,
 and returns it as a vector of (name, value) pairs.</p>
-</div><h4 id='method.params' class='method'><code>fn <a href='#method.params' class='fnname'>params</a>(&amp;self) -&gt; <a class='struct' href='https://doc.rust-lang.org/nightly/core/slice/struct.Iter.html' title='core::slice::Iter'>Iter</a>&lt;<a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.tuple.html'>(<a class='struct' href='https://doc.rust-lang.org/nightly/collections/string/struct.String.html' title='collections::string::String'>String</a>, <a class='struct' href='https://doc.rust-lang.org/nightly/collections/string/struct.String.html' title='collections::string::String'>String</a>)</a>&gt;</code></h4>
-<div class='docblock'><p>Returns the parameters declared by the route that matched the URL of this request.</p>
-</div><h4 id='method.path' class='method'><code>fn <a href='#method.path' class='fnname'>path</a>(&amp;self) -&gt; &amp;<a class='struct' href='https://doc.rust-lang.org/nightly/collections/vec/struct.Vec.html' title='collections::vec::Vec'>Vec</a>&lt;<a class='struct' href='https://doc.rust-lang.org/nightly/collections/string/struct.String.html' title='collections::string::String'>String</a>&gt;</code></h4>
+</div><h4 id='method.method' class='method'><code>fn <a href='#method.method' class='fnname'>method</a>(&amp;self) -&gt; &amp;<a class='enum' href='https://hyperium.github.io/hyper/hyper/method/enum.Method.html' title='hyper::method::Method'>Method</a></code></h4>
+<div class='docblock'><p>Returns the method</p>
+</div><h4 id='method.headers' class='method'><code>fn <a href='#method.headers' class='fnname'>headers</a>(&amp;self) -&gt; &amp;<a class='struct' href='../edge/header/struct.Headers.html' title='edge::header::Headers'>Headers</a></code></h4>
+<div class='docblock'><p>Returns headers</p>
+</div><h4 id='method.param' class='method'><code>fn <a href='#method.param' class='fnname'>param</a>(&amp;self, key: &amp;<a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.str.html'>str</a>) -&gt; <a class='enum' href='https://doc.rust-lang.org/nightly/core/option/enum.Option.html' title='core::option::Option'>Option</a>&lt;&amp;<a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.str.html'>str</a>&gt;</code></h4>
+<div class='docblock'><p>Returns the parameter with the given name declared by the route that matched the URL of this request (if any).</p>
+</div><h4 id='method.path' class='method'><code>fn <a href='#method.path' class='fnname'>path</a>(&amp;self) -&gt; <a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.slice.html'>&amp;[</a><a class='struct' href='https://doc.rust-lang.org/nightly/collections/string/struct.String.html' title='collections::string::String'>String</a><a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.slice.html'>]</a></code></h4>
 <div class='docblock'><p>Returns the path of this request, i.e. the list of segments of the URL.</p>
-</div><h4 id='method.query' class='method'><code>fn <a href='#method.query' class='fnname'>query</a>(&amp;self) -&gt; &amp;<a class='enum' href='https://doc.rust-lang.org/nightly/core/option/enum.Option.html' title='core::option::Option'>Option</a>&lt;<a class='struct' href='https://doc.rust-lang.org/nightly/collections/string/struct.String.html' title='collections::string::String'>String</a>&gt;</code></h4>
+</div><h4 id='method.query' class='method'><code>fn <a href='#method.query' class='fnname'>query</a>(&amp;self) -&gt; <a class='enum' href='https://doc.rust-lang.org/nightly/core/option/enum.Option.html' title='core::option::Option'>Option</a>&lt;&amp;<a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.str.html'>str</a>&gt;</code></h4>
 <div class='docblock'><p>Returns the query of this request (if any).</p>
-</div><h4 id='method.fragment' class='method'><code>fn <a href='#method.fragment' class='fnname'>fragment</a>(&amp;self) -&gt; &amp;<a class='enum' href='https://doc.rust-lang.org/nightly/core/option/enum.Option.html' title='core::option::Option'>Option</a>&lt;<a class='struct' href='https://doc.rust-lang.org/nightly/collections/string/struct.String.html' title='collections::string::String'>String</a>&gt;</code></h4>
+</div><h4 id='method.fragment' class='method'><code>fn <a href='#method.fragment' class='fnname'>fragment</a>(&amp;self) -&gt; <a class='enum' href='https://doc.rust-lang.org/nightly/core/option/enum.Option.html' title='core::option::Option'>Option</a>&lt;&amp;<a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.str.html'>str</a>&gt;</code></h4>
 <div class='docblock'><p>Returns the fragment of this request (if any).</p>
-</div></div><h2 id='implementations'>Trait Implementations</h2><h3 class='impl'><code>impl&lt;'a, 'b&gt; <a class='trait' href='https://doc.rust-lang.org/nightly/core/ops/trait.Drop.html' title='core::ops::Drop'>Drop</a> for <a class='struct' href='../edge/struct.Request.html' title='edge::Request'>Request</a>&lt;'a, 'b&gt;</code></h3><div class='docblock'><p>Drop implementation to make sure the body of a request is discarded if nobody reads it.</p>
-</div><div class='impl-items'><h4 id='method.drop' class='method'><code>fn <a href='https://doc.rust-lang.org/nightly/core/ops/trait.Drop.html#method.drop' class='fnname'>drop</a>(&amp;mut self)</code></h4>
-</div></section>
+</div></div></section>
     <section id='search' class="content hidden"></section>
 
     <section class="footer"></section>
@@ -112,7 +114,7 @@ and returns it as a vector of (name, value) pairs.</p>
 
                 <p>
                     Search functions by type signature (e.g.
-                    <code>vec -> usize</code>)
+                    <code>vec -> usize</code> or <code>* -> vec</code>)
                 </p>
             </div>
         </div>

@@ -46,14 +46,15 @@
             <a id="toggle-all-docs" href="javascript:void(0)" title="collapse all docs">
                 [<span class='inner'>&#x2212;</span>]
             </a>
-        </span><a id='src-0' class='srclink' href='../src/edge/lib.rs.html#1-505' title='goto source code'>[src]</a></span></h1>
-<div class='docblock'><p>Edge is a Web framework that aims to be simple to use, with the most common things you need out of the box.
-There are no plugins, the framework is not modular, but it is simple to use and easy to contribute to.</p>
+        </span><a id='src-0' class='srclink' href='../src/edge/src/lib.rs.html#1-394' title='goto source code'>[src]</a></span></h1>
+<div class='docblock'><p>Edge is a Web framework that is simple to use, with the most common things
+you need out of the box, and flexible, supporting both synchronous and asynchronous
+request handling styles; see below for examples.</p>
 
 <p>The crate exports the things that you often need from dependencies, such as headers (from <code>hyper</code>),
 cookies (from <code>cookie</code>) and JSON serialization (from <code>serde_json</code>).</p>
 
-<p><em>Warning</em>: this is a very early version, and the API is not fully stable yet.</p>
+<p>Please note that this is an early version, and the API is likely to evolve.</p>
 
 <h2 id='overview' class='section-header'><a href='#overview'>Overview</a></h2>
 <p>In Edge you must define an <em>application structure</em> that contains the state of your application.
@@ -62,7 +63,8 @@ with given URLs to methods of your application. The container handles the routin
 delegates calls to the appropriate methods.</p>
 
 <p>Note that the state cannot be mutated, as is usual in Rust (and enforced by the underlying HTTP server
-this crate uses, a.k.a. Hyper). Any shared mutable variable must be wrapped in a <code>Mutex</code>.</p>
+this crate uses, a.k.a. Hyper). Use appropriate concurrent data structures if you need
+shared mutable variables: locks, mutexes, channels, etc.</p>
 
 <h2 id='why-another-web-framework-in-rust' class='section-header'><a href='#why-another-web-framework-in-rust'>Why another Web framework in Rust?</a></h2>
 <p>Because I wanted a simple Web framework with:</p>
@@ -72,40 +74,131 @@ this crate uses, a.k.a. Hyper). Any shared mutable variable must be wrapped in a
 <li>the possibility to describe my application as a struct, so that callbacks could use a state (even if just for configuration).</li>
 </ol>
 
-<p>I hope you like this crate, if it misses something to fit your needs just open an issue or make a pull request!</p>
+<p>We focus on integration rather than modularity.
+I hope you like this crate, if it misses something to fit your needs just open an issue or make a pull request!</p>
 
 <p>And please keep in mind that the framework is in a (very) early stage :-)</p>
 
-<h2 id='hello-world' class='section-header'><a href='#hello-world'>Hello World</a></h2><pre class='rust rust-example-rendered'>
+<h2 id='hello-world' class='section-header'><a href='#hello-world'>Hello World</a></h2>
+<p>The most basic application: no state, a single page that prints Hello, world!</p>
+
+<pre class='rust rust-example-rendered'>
 <span class='kw'>extern</span> <span class='kw'>crate</span> <span class='ident'>edge</span>;
 
-<span class='kw'>use</span> <span class='ident'>edge</span>::{<span class='ident'>Container</span>, <span class='ident'>Request</span>, <span class='ident'>Response</span>, <span class='ident'>Status</span>};
-<span class='kw'>use</span> <span class='ident'>edge</span>::<span class='ident'>header</span>::<span class='ident'>Server</span>;
-<span class='kw'>use</span> <span class='ident'>std</span>::<span class='ident'>io</span>::<span class='prelude-ty'>Result</span>;
-<span class='kw'>use</span> <span class='ident'>std</span>::<span class='ident'>sync</span>::<span class='ident'>Mutex</span>;
+<span class='kw'>use</span> <span class='ident'>edge</span>::{<span class='ident'>Edge</span>, <span class='ident'>Request</span>, <span class='ident'>Response</span>};
 
-<span class='kw'>struct</span> <span class='ident'>MyApp</span> {
-    <span class='ident'>version</span>: <span class='kw-2'>&amp;</span><span class='lifetime'>&#39;static</span> <span class='ident'>str</span>,
-    <span class='ident'>counter</span>: <span class='ident'>Mutex</span><span class='op'>&lt;</span><span class='ident'>u32</span><span class='op'>&gt;</span>
-}
-
+<span class='kw'>struct</span> <span class='ident'>MyApp</span>;
 <span class='kw'>impl</span> <span class='ident'>MyApp</span> {
-    <span class='kw'>fn</span> <span class='ident'>home</span>(<span class='kw-2'>&amp;</span><span class='self'>self</span>, <span class='ident'>_req</span>: <span class='kw-2'>&amp;</span><span class='kw-2'>mut</span> <span class='ident'>Request</span>, <span class='kw-2'>mut</span> <span class='ident'>res</span>: <span class='ident'>Response</span>) <span class='op'>-&gt;</span> <span class='prelude-ty'>Result</span><span class='op'>&lt;</span>()<span class='op'>&gt;</span> {
-        <span class='kw'>let</span> <span class='ident'>cnt</span> <span class='op'>=</span> {
-            <span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>counter</span> <span class='op'>=</span> <span class='self'>self</span>.<span class='ident'>counter</span>.<span class='ident'>lock</span>().<span class='ident'>unwrap</span>();
-            <span class='op'>*</span><span class='ident'>counter</span> <span class='op'>+=</span> <span class='number'>1</span>;
-            <span class='op'>*</span><span class='ident'>counter</span>
-        };
-
-        <span class='ident'>res</span>.<span class='ident'>status</span>(<span class='ident'>Status</span>::<span class='prelude-val'>Ok</span>).<span class='ident'>content_type</span>(<span class='string'>&quot;text/plain&quot;</span>);
-        <span class='ident'>res</span>.<span class='ident'>header</span>(<span class='ident'>Server</span>(<span class='macro'>format</span><span class='macro'>!</span>(<span class='string'>&quot;Edge version {}&quot;</span>, <span class='self'>self</span>.<span class='ident'>version</span>)));
-        <span class='ident'>res</span>.<span class='ident'>send</span>(<span class='macro'>format</span><span class='macro'>!</span>(<span class='string'>&quot;Hello, world! {} visits&quot;</span>, <span class='ident'>cnt</span>))
+    <span class='kw'>fn</span> <span class='ident'>hello</span>(<span class='kw-2'>&amp;</span><span class='self'>self</span>, <span class='ident'>_req</span>: <span class='kw-2'>&amp;</span><span class='kw-2'>mut</span> <span class='ident'>Request</span>, <span class='kw-2'>mut</span> <span class='ident'>res</span>: <span class='ident'>Response</span>) {
+        <span class='ident'>res</span>.<span class='ident'>content_type</span>(<span class='string'>&quot;text/plain&quot;</span>);
+        <span class='ident'>res</span>.<span class='ident'>send</span>(<span class='string'>&quot;Hello, world!&quot;</span>)
     }
 }
 
 <span class='kw'>fn</span> <span class='ident'>main</span>() {
-    <span class='kw'>let</span> <span class='ident'>app</span> <span class='op'>=</span> <span class='ident'>MyApp</span> { <span class='ident'>version</span>: <span class='string'>&quot;0.1&quot;</span>, <span class='ident'>counter</span>: <span class='ident'>Mutex</span>::<span class='ident'>new</span>(<span class='number'>0</span>) };
-    <span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>cter</span> <span class='op'>=</span> <span class='ident'>Container</span>::<span class='ident'>new</span>(<span class='ident'>app</span>);
+    <span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>cter</span> <span class='op'>=</span> <span class='ident'>Edge</span>::<span class='ident'>new</span>(<span class='ident'>MyApp</span>);
+    <span class='ident'>cter</span>.<span class='ident'>get</span>(<span class='string'>&quot;/&quot;</span>, <span class='ident'>MyApp</span>::<span class='ident'>hello</span>);
+    <span class='ident'>cter</span>.<span class='ident'>start</span>(<span class='string'>&quot;0.0.0.0:3000&quot;</span>).<span class='ident'>unwrap</span>();
+}</pre>
+
+<h2 id='asynchronous-handling' class='section-header'><a href='#asynchronous-handling'>Asynchronous handling</a></h2>
+<p>Under the hood, Edge uses the asynchronous version of Hyper. This means that to get the maximum
+performance, you should avoid waiting in a handler, so that other requests
+can be served as soon as possible. In that example, the handler waits in a separate thread before sending
+the response.</p>
+
+<pre class='rust rust-example-rendered'>
+<span class='kw'>extern</span> <span class='kw'>crate</span> <span class='ident'>edge</span>;
+
+<span class='kw'>use</span> <span class='ident'>edge</span>::{<span class='ident'>Edge</span>, <span class='ident'>Request</span>, <span class='ident'>Response</span>};
+<span class='kw'>use</span> <span class='ident'>std</span>::<span class='ident'>thread</span>;
+<span class='kw'>use</span> <span class='ident'>std</span>::<span class='ident'>time</span>::<span class='ident'>Duration</span>;
+
+<span class='kw'>struct</span> <span class='ident'>MyApp</span>;
+<span class='kw'>impl</span> <span class='ident'>MyApp</span> {
+    <span class='kw'>fn</span> <span class='ident'>hello</span>(<span class='kw-2'>&amp;</span><span class='self'>self</span>, <span class='ident'>_req</span>: <span class='kw-2'>&amp;</span><span class='kw-2'>mut</span> <span class='ident'>Request</span>, <span class='kw-2'>mut</span> <span class='ident'>res</span>: <span class='ident'>Response</span>) {
+        <span class='ident'>thread</span>::<span class='ident'>spawn</span>(<span class='kw'>move</span> <span class='op'>||</span> {
+            <span class='macro'>println</span><span class='macro'>!</span>(<span class='string'>&quot;waiting 1 second&quot;</span>);
+            <span class='ident'>thread</span>::<span class='ident'>sleep</span>(<span class='ident'>Duration</span>::<span class='ident'>from_secs</span>(<span class='number'>1</span>));
+
+            <span class='ident'>res</span>.<span class='ident'>content_type</span>(<span class='string'>&quot;text/plain&quot;</span>);
+            <span class='ident'>res</span>.<span class='ident'>send</span>(<span class='string'>&quot;Hello, world!&quot;</span>)
+        });
+
+        <span class='comment'>// the handler returns immediately without waiting for the thread</span>
+    }
+}
+
+<span class='kw'>fn</span> <span class='ident'>main</span>() {
+    <span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>cter</span> <span class='op'>=</span> <span class='ident'>Edge</span>::<span class='ident'>new</span>(<span class='ident'>MyApp</span>);
+    <span class='ident'>cter</span>.<span class='ident'>get</span>(<span class='string'>&quot;/&quot;</span>, <span class='ident'>MyApp</span>::<span class='ident'>hello</span>);
+    <span class='ident'>cter</span>.<span class='ident'>start</span>(<span class='string'>&quot;0.0.0.0:3000&quot;</span>).<span class='ident'>unwrap</span>();
+}</pre>
+
+<h2 id='templating' class='section-header'><a href='#templating'>Templating</a></h2>
+<p>Here our application has a version, still a single handler except this time
+it accepts any page name, and renders a Handlebars template.  We&#39;re also
+setting a custom Server header.</p>
+
+<pre class='rust rust-example-rendered'>
+<span class='kw'>extern</span> <span class='kw'>crate</span> <span class='ident'>edge</span>;
+
+<span class='kw'>use</span> <span class='ident'>edge</span>::{<span class='ident'>Edge</span>, <span class='ident'>Request</span>, <span class='ident'>Response</span>, <span class='ident'>Status</span>};
+<span class='kw'>use</span> <span class='ident'>edge</span>::<span class='ident'>header</span>::<span class='ident'>Server</span>;
+<span class='kw'>use</span> <span class='ident'>std</span>::<span class='ident'>collections</span>::<span class='ident'>BTreeMap</span>;
+
+<span class='kw'>struct</span> <span class='ident'>MyApp</span> {
+    <span class='ident'>version</span>: <span class='kw-2'>&amp;</span><span class='lifetime'>&#39;static</span> <span class='ident'>str</span>
+}
+
+<span class='kw'>impl</span> <span class='ident'>MyApp</span> {
+    <span class='kw'>fn</span> <span class='ident'>page_handler</span>(<span class='kw-2'>&amp;</span><span class='self'>self</span>, <span class='ident'>req</span>: <span class='kw-2'>&amp;</span><span class='kw-2'>mut</span> <span class='ident'>Request</span>, <span class='kw-2'>mut</span> <span class='ident'>res</span>: <span class='ident'>Response</span>) {
+        <span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>data</span> <span class='op'>=</span> <span class='ident'>BTreeMap</span>::<span class='ident'>new</span>();
+        <span class='ident'>data</span>.<span class='ident'>insert</span>(<span class='string'>&quot;title&quot;</span>, <span class='ident'>req</span>.<span class='ident'>param</span>(<span class='string'>&quot;page&quot;</span>).<span class='ident'>unwrap</span>());
+        <span class='ident'>data</span>.<span class='ident'>insert</span>(<span class='string'>&quot;version&quot;</span>, <span class='self'>self</span>.<span class='ident'>version</span>);
+
+        <span class='ident'>res</span>.<span class='ident'>content_type</span>(<span class='string'>&quot;text/html&quot;</span>).<span class='ident'>header</span>(<span class='ident'>Server</span>(<span class='macro'>format</span><span class='macro'>!</span>(<span class='string'>&quot;Edge version {}&quot;</span>, <span class='self'>self</span>.<span class='ident'>version</span>)));
+        <span class='ident'>res</span>.<span class='ident'>render</span>(<span class='string'>&quot;views/page.hbs&quot;</span>, <span class='ident'>data</span>)
+    }
+}
+
+<span class='kw'>fn</span> <span class='ident'>main</span>() {
+    <span class='kw'>let</span> <span class='ident'>app</span> <span class='op'>=</span> <span class='ident'>MyApp</span> { <span class='ident'>version</span>: <span class='string'>&quot;0.1&quot;</span> };
+    <span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>cter</span> <span class='op'>=</span> <span class='ident'>Edge</span>::<span class='ident'>new</span>(<span class='ident'>app</span>);
+    <span class='ident'>cter</span>.<span class='ident'>get</span>(<span class='string'>&quot;/:page&quot;</span>, <span class='ident'>MyApp</span>::<span class='ident'>page_handler</span>);
+    <span class='ident'>cter</span>.<span class='ident'>start</span>(<span class='string'>&quot;0.0.0.0:3000&quot;</span>).<span class='ident'>unwrap</span>();
+}</pre>
+
+<h2 id='using-a-shared-mutable-counter' class='section-header'><a href='#using-a-shared-mutable-counter'>Using a shared mutable counter</a></h2>
+<p>In this example, we use an atomic integer to track a counter. This shows a very basic
+kind of shared state for a handler. In practice, it&#39;s best to avoid using blocking
+mechanisms (locks, mutexes) in a handler directly. Prefer non-blocking calls,
+like channels&#39; try_recv, or move blocking code in a separate thread,
+see the example for asynchronous handling above.</p>
+
+<pre class='rust rust-example-rendered'>
+<span class='kw'>extern</span> <span class='kw'>crate</span> <span class='ident'>edge</span>;
+
+<span class='kw'>use</span> <span class='ident'>edge</span>::{<span class='ident'>Edge</span>, <span class='ident'>Request</span>, <span class='ident'>Response</span>, <span class='ident'>Status</span>};
+<span class='kw'>use</span> <span class='ident'>std</span>::<span class='ident'>sync</span>::<span class='ident'>atomic</span>::{<span class='ident'>AtomicUsize</span>, <span class='ident'>Ordering</span>};
+
+<span class='kw'>struct</span> <span class='ident'>MyApp</span> {
+    <span class='ident'>counter</span>: <span class='ident'>AtomicUsize</span>
+}
+
+<span class='kw'>impl</span> <span class='ident'>MyApp</span> {
+    <span class='kw'>fn</span> <span class='ident'>home</span>(<span class='kw-2'>&amp;</span><span class='self'>self</span>, <span class='ident'>_req</span>: <span class='kw-2'>&amp;</span><span class='kw-2'>mut</span> <span class='ident'>Request</span>, <span class='kw-2'>mut</span> <span class='ident'>res</span>: <span class='ident'>Response</span>) {
+        <span class='kw'>let</span> <span class='ident'>visits</span> <span class='op'>=</span> <span class='self'>self</span>.<span class='ident'>counter</span>.<span class='ident'>load</span>(<span class='ident'>Ordering</span>::<span class='ident'>Relaxed</span>);
+        <span class='self'>self</span>.<span class='ident'>counter</span>.<span class='ident'>store</span>(<span class='ident'>visits</span> <span class='op'>+</span> <span class='number'>1</span>, <span class='ident'>Ordering</span>::<span class='ident'>Relaxed</span>);
+
+        <span class='ident'>res</span>.<span class='ident'>status</span>(<span class='ident'>Status</span>::<span class='prelude-val'>Ok</span>).<span class='ident'>content_type</span>(<span class='string'>&quot;text/plain&quot;</span>);
+        <span class='ident'>res</span>.<span class='ident'>send</span>(<span class='macro'>format</span><span class='macro'>!</span>(<span class='string'>&quot;Hello, world! {} visits&quot;</span>, <span class='ident'>visits</span>))
+    }
+}
+
+<span class='kw'>fn</span> <span class='ident'>main</span>() {
+    <span class='kw'>let</span> <span class='ident'>app</span> <span class='op'>=</span> <span class='ident'>MyApp</span> { <span class='ident'>counter</span>: <span class='ident'>AtomicUsize</span>::<span class='ident'>new</span>(<span class='number'>0</span>) };
+    <span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>cter</span> <span class='op'>=</span> <span class='ident'>Edge</span>::<span class='ident'>new</span>(<span class='ident'>app</span>);
     <span class='ident'>cter</span>.<span class='ident'>get</span>(<span class='string'>&quot;/&quot;</span>, <span class='ident'>MyApp</span>::<span class='ident'>home</span>);
     <span class='ident'>cter</span>.<span class='ident'>start</span>(<span class='string'>&quot;0.0.0.0:3000&quot;</span>).<span class='ident'>unwrap</span>();
 }</pre>
@@ -116,7 +209,6 @@ this crate uses, a.k.a. Hyper). Any shared mutable variable must be wrapped in a
                                title='edge::header'>header</a></td>
                         <td class='docblock short'>
                              <p>Headers container, and common header fields.</p>
-
                         </td>
                     </tr>
                 
@@ -125,23 +217,29 @@ this crate uses, a.k.a. Hyper). Any shared mutable variable must be wrapped in a
                                title='edge::value'>value</a></td>
                         <td class='docblock short'>
                              <p>JSON Value</p>
-
                         </td>
                     </tr>
                 </table><h2 id='structs' class='section-header'><a href="#structs">Structs</a></h2>
 <table>
                     <tr class=' module-item'>
-                        <td><a class='struct' href='struct.Container.html'
-                               title='edge::Container'>Container</a></td>
+                        <td><a class='struct' href='struct.Cookie.html'
+                               title='edge::Cookie'>Cookie</a></td>
                         <td class='docblock short'>
-                             <p>Container of an application.</p>
-
+                             
                         </td>
                     </tr>
                 
                     <tr class=' module-item'>
-                        <td><a class='struct' href='struct.Cookie.html'
-                               title='edge::Cookie'>Cookie</a></td>
+                        <td><a class='struct' href='struct.Edge.html'
+                               title='edge::Edge'>Edge</a></td>
+                        <td class='docblock short'>
+                             <p>Structure for an Edge application.</p>
+                        </td>
+                    </tr>
+                
+                    <tr class=' module-item'>
+                        <td><a class='struct' href='struct.EdgeHandler.html'
+                               title='edge::EdgeHandler'>EdgeHandler</a></td>
                         <td class='docblock short'>
                              
                         </td>
@@ -152,7 +250,6 @@ this crate uses, a.k.a. Hyper). Any shared mutable variable must be wrapped in a
                                title='edge::Request'>Request</a></td>
                         <td class='docblock short'>
                              <p>A request, with a path, query, and fragment (accessor methods not yet implemented for the last two).</p>
-
                         </td>
                     </tr>
                 
@@ -160,16 +257,7 @@ this crate uses, a.k.a. Hyper). Any shared mutable variable must be wrapped in a
                         <td><a class='struct' href='struct.Response.html'
                                title='edge::Response'>Response</a></td>
                         <td class='docblock short'>
-                             
-                        </td>
-                    </tr>
-                
-                    <tr class=' module-item'>
-                        <td><a class='struct' href='struct.Route.html'
-                               title='edge::Route'>Route</a></td>
-                        <td class='docblock short'>
-                             <p>A route is an absolute URL pattern with a leading slash, and segments separated by slashes.</p>
-
+                             <p>This represents the response that will be sent back to the application.</p>
                         </td>
                     </tr>
                 </table><h2 id='enums' class='section-header'><a href="#enums">Enums</a></h2>
@@ -179,7 +267,6 @@ this crate uses, a.k.a. Hyper). Any shared mutable variable must be wrapped in a
                                title='edge::Status'>Status</a></td>
                         <td class='docblock short'>
                              <p>An HTTP status code (<code>status-code</code> in RFC 7230 et al.).</p>
-
                         </td>
                     </tr>
                 </table><h2 id='types' class='section-header'><a href="#types">Type Definitions</a></h2>
@@ -189,7 +276,6 @@ this crate uses, a.k.a. Hyper). Any shared mutable variable must be wrapped in a
                                title='edge::Callback'>Callback</a></td>
                         <td class='docblock short'>
                              <p>Signature for a callback method</p>
-
                         </td>
                     </tr>
                 </table></section>
@@ -235,7 +321,7 @@ this crate uses, a.k.a. Hyper). Any shared mutable variable must be wrapped in a
 
                 <p>
                     Search functions by type signature (e.g.
-                    <code>vec -> usize</code>)
+                    <code>vec -> usize</code> or <code>* -> vec</code>)
                 </p>
             </div>
         </div>

@@ -1,0 +1,10 @@
+(function() {var implementors = {};
+implementors['edge'] = ["impl&lt;C, H&gt; Machine for <a class='enum' href='https://hyperium.github.io/hyper/hyper/client/enum.ClientFsm.html' title='hyper::client::ClientFsm'>ClientFsm</a>&lt;C, H&gt; <span class='where'>where C: <a class='trait' href='https://hyperium.github.io/hyper/hyper/client/connect/trait.Connect.html' title='hyper::client::connect::Connect'>Connect</a>, H: <a class='trait' href='https://hyperium.github.io/hyper/hyper/client/trait.Handler.html' title='hyper::client::Handler'>Handler</a>&lt;C::<a class='trait' href='https://hyperium.github.io/hyper/hyper/client/connect/trait.Connect.html' title='hyper::client::connect::Connect'>Output</a>&gt;, C::<a class='trait' href='https://hyperium.github.io/hyper/hyper/client/connect/trait.Connect.html' title='hyper::client::connect::Connect'>Output</a>: <a class='trait' href='https://hyperium.github.io/hyper/hyper/net/trait.Transport.html' title='hyper::net::Transport'>Transport</a></span>","impl&lt;A, H&gt; Machine for <a class='enum' href='https://hyperium.github.io/hyper/hyper/server/enum.ServerFsm.html' title='hyper::server::ServerFsm'>ServerFsm</a>&lt;A, H&gt; <span class='where'>where A: <a class='trait' href='https://hyperium.github.io/hyper/hyper/net/trait.Accept.html' title='hyper::net::Accept'>Accept</a>, H: <a class='trait' href='https://hyperium.github.io/hyper/hyper/server/trait.HandlerFactory.html' title='hyper::server::HandlerFactory'>HandlerFactory</a>&lt;A::<a class='trait' href='https://hyperium.github.io/hyper/hyper/net/trait.Accept.html' title='hyper::net::Accept'>Output</a>&gt;, A::<a class='trait' href='https://hyperium.github.io/hyper/hyper/net/trait.Accept.html' title='hyper::net::Accept'>Output</a>: <a class='trait' href='https://hyperium.github.io/hyper/hyper/net/trait.Transport.html' title='hyper::net::Transport'>Transport</a></span>",];
+
+            if (window.register_implementors) {
+                window.register_implementors(implementors);
+            } else {
+                window.pending_implementors = implementors;
+            }
+        
+})()

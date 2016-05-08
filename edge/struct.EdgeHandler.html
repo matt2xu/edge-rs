@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="generator" content="rustdoc">
+    <meta name="description" content="API documentation for the Rust `EdgeHandler` struct in crate `edge`.">
+    <meta name="keywords" content="rust, rustlang, rust-lang, EdgeHandler">
+
+    <title>edge::EdgeHandler - Rust</title>
+
+    <link rel="stylesheet" type="text/css" href="../rustdoc.css">
+    <link rel="stylesheet" type="text/css" href="../main.css">
+
+    
+    
+</head>
+<body class="rustdoc">
+    <!--[if lte IE 8]>
+    <div class="warning">
+        This old browser is unsupported and will most likely display funky
+        things.
+    </div>
+    <![endif]-->
+
+    
+
+    <nav class="sidebar">
+        
+        <p class='location'><a href='index.html'>edge</a></p><script>window.sidebarCurrent = {name: 'EdgeHandler', ty: 'struct', relpath: ''};</script><script defer src="sidebar-items.js"></script>
+    </nav>
+
+    <nav class="sub">
+        <form class="search-form js-only">
+            <div class="search-container">
+                <input class="search-input" name="search"
+                       autocomplete="off"
+                       placeholder="Click or press ‘S’ to search, ‘?’ for more options…"
+                       type="search">
+            </div>
+        </form>
+    </nav>
+
+    <section id='main' class="content struct">
+<h1 class='fqn'><span class='in-band'>Struct <a href='index.html'>edge</a>::<wbr><a class='struct' href=''>EdgeHandler</a></span><span class='out-of-band'><span id='render-detail'>
+            <a id="toggle-all-docs" href="javascript:void(0)" title="collapse all docs">
+                [<span class='inner'>&#x2212;</span>]
+            </a>
+        </span><a id='src-461' class='srclink' href='../src/edge/src/lib.rs.html#257-264' title='goto source code'>[src]</a></span></h1>
+<pre class='rust struct'>pub struct EdgeHandler&lt;T: <a class='trait' href='https://doc.rust-lang.org/nightly/core/marker/trait.Send.html' title='core::marker::Send'>Send</a> + <a class='trait' href='https://doc.rust-lang.org/nightly/core/marker/trait.Sync.html' title='core::marker::Sync'>Sync</a>&gt; {
+    // some fields omitted
+}</pre><h2 id='implementations'>Trait Implementations</h2><h3 class='impl'><code>impl&lt;T: 'static + <a class='trait' href='https://doc.rust-lang.org/nightly/core/marker/trait.Send.html' title='core::marker::Send'>Send</a> + <a class='trait' href='https://doc.rust-lang.org/nightly/core/marker/trait.Sync.html' title='core::marker::Sync'>Sync</a>&gt; <a class='trait' href='https://hyperium.github.io/hyper/hyper/server/trait.Handler.html' title='hyper::server::Handler'>Handler</a>&lt;<a class='struct' href='https://hyperium.github.io/hyper/hyper/net/struct.HttpStream.html' title='hyper::net::HttpStream'>HttpStream</a>&gt; for <a class='struct' href='../edge/struct.EdgeHandler.html' title='edge::EdgeHandler'>EdgeHandler</a>&lt;T&gt;</code></h3><div class='docblock'><p>Implements Handler for our EdgeHandler.</p>
+</div><div class='impl-items'><h4 id='method.on_request' class='method'><code>fn <a href='https://hyperium.github.io/hyper/hyper/server/trait.Handler.html#method.on_request' class='fnname'>on_request</a>(&amp;mut self, req: <a class='struct' href='https://hyperium.github.io/hyper/hyper/server/request/struct.Request.html' title='hyper::server::request::Request'>HttpRequest</a>) -&gt; <a class='struct' href='https://hyperium.github.io/hyper/hyper/http/struct.Next.html' title='hyper::http::Next'>Next</a></code></h4>
+<h4 id='method.on_request_readable' class='method'><code>fn <a href='https://hyperium.github.io/hyper/hyper/server/trait.Handler.html#method.on_request_readable' class='fnname'>on_request_readable</a>(&amp;mut self, transport: &amp;mut <a class='struct' href='https://hyperium.github.io/hyper/hyper/http/struct.Decoder.html' title='hyper::http::Decoder'>Decoder</a>&lt;<a class='struct' href='https://hyperium.github.io/hyper/hyper/net/struct.HttpStream.html' title='hyper::net::HttpStream'>HttpStream</a>&gt;) -&gt; <a class='struct' href='https://hyperium.github.io/hyper/hyper/http/struct.Next.html' title='hyper::http::Next'>Next</a></code></h4>
+<h4 id='method.on_response' class='method'><code>fn <a href='https://hyperium.github.io/hyper/hyper/server/trait.Handler.html#method.on_response' class='fnname'>on_response</a>(&amp;mut self, res: &amp;mut <a class='struct' href='https://hyperium.github.io/hyper/hyper/server/response/struct.Response.html' title='hyper::server::response::Response'>HttpResponse</a>) -&gt; <a class='struct' href='https://hyperium.github.io/hyper/hyper/http/struct.Next.html' title='hyper::http::Next'>Next</a></code></h4>
+<h4 id='method.on_response_writable' class='method'><code>fn <a href='https://hyperium.github.io/hyper/hyper/server/trait.Handler.html#method.on_response_writable' class='fnname'>on_response_writable</a>(&amp;mut self, transport: &amp;mut <a class='struct' href='https://hyperium.github.io/hyper/hyper/http/struct.Encoder.html' title='hyper::http::Encoder'>Encoder</a>&lt;<a class='struct' href='https://hyperium.github.io/hyper/hyper/net/struct.HttpStream.html' title='hyper::net::HttpStream'>HttpStream</a>&gt;) -&gt; <a class='struct' href='https://hyperium.github.io/hyper/hyper/http/struct.Next.html' title='hyper::http::Next'>Next</a></code></h4>
+<h4 id='method.on_error' class='method'><code>fn <a href='https://hyperium.github.io/hyper/hyper/server/trait.Handler.html#method.on_error' class='fnname'>on_error</a>(&amp;mut self, err: <a class='enum' href='https://hyperium.github.io/hyper/hyper/error/enum.Error.html' title='hyper::error::Error'>Error</a>) -&gt; <a class='struct' href='https://hyperium.github.io/hyper/hyper/http/struct.Next.html' title='hyper::http::Next'>Next</a></code></h4>
+<h4 id='method.on_remove' class='method'><code>fn <a href='https://hyperium.github.io/hyper/hyper/server/trait.Handler.html#method.on_remove' class='fnname'>on_remove</a>(self, _transport: T)</code></h4>
+</div></section>
+    <section id='search' class="content hidden"></section>
+
+    <section class="footer"></section>
+
+    <aside id="help" class="hidden">
+        <div>
+            <h1 class="hidden">Help</h1>
+
+            <div class="shortcuts">
+                <h2>Keyboard Shortcuts</h2>
+
+                <dl>
+                    <dt>?</dt>
+                    <dd>Show this help dialog</dd>
+                    <dt>S</dt>
+                    <dd>Focus the search field</dd>
+                    <dt>&larrb;</dt>
+                    <dd>Move up in search results</dd>
+                    <dt>&rarrb;</dt>
+                    <dd>Move down in search results</dd>
+                    <dt>&#9166;</dt>
+                    <dd>Go to active search result</dd>
+                </dl>
+            </div>
+
+            <div class="infos">
+                <h2>Search Tricks</h2>
+
+                <p>
+                    Prefix searches with a type followed by a colon (e.g.
+                    <code>fn:</code>) to restrict the search to a given type.
+                </p>
+
+                <p>
+                    Accepted types are: <code>fn</code>, <code>mod</code>,
+                    <code>struct</code>, <code>enum</code>,
+                    <code>trait</code>, <code>type</code>, <code>macro</code>,
+                    and <code>const</code>.
+                </p>
+
+                <p>
+                    Search functions by type signature (e.g.
+                    <code>vec -> usize</code> or <code>* -> vec</code>)
+                </p>
+            </div>
+        </div>
+    </aside>
+
+    
+
+    <script>
+        window.rootPath = "../";
+        window.currentCrate = "edge";
+        window.playgroundUrl = "";
+    </script>
+    <script src="../jquery.js"></script>
+    <script src="../main.js"></script>
+    
+    <script defer src="../search-index.js"></script>
+</body>
+</html>

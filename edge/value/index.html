@@ -51,7 +51,8 @@
 
 <p>This module is centered around the <code>Value</code> type, which can represent all possible JSON values.</p>
 
-<h1 id='example-of-use' class='section-header'><a href='#example-of-use'>Example of use:</a></h1><pre class='rust rust-example-rendered'>
+<h1 id='example-of-use' class='section-header'><a href='#example-of-use'>Example of use:</a></h1>
+<pre class='rust rust-example-rendered'>
 <span class='kw'>extern</span> <span class='kw'>crate</span> <span class='ident'>serde_json</span>;
 
 <span class='kw'>use</span> <span class='ident'>serde_json</span>::<span class='ident'>Value</span>;
@@ -62,6 +63,7 @@
 }</pre>
 
 <p>It is also possible to deserialize from a <code>Value</code> type:</p>
+
 <pre class='rust rust-example-rendered'>
 <span class='kw'>extern</span> <span class='kw'>crate</span> <span class='ident'>serde_json</span>;
 
@@ -83,7 +85,6 @@
                                title='edge::value::Deserializer'>Deserializer</a></td>
                         <td class='docblock short'>
                              <p>Creates a <code>serde::Deserializer</code> from a <code>json::Value</code> object.</p>
-
                         </td>
                     </tr>
                 
@@ -92,7 +93,6 @@
                                title='edge::value::Serializer'>Serializer</a></td>
                         <td class='docblock short'>
                              <p>Create a <code>serde::Serializer</code> that serializes a <code>Serialize</code>e into a <code>Value</code>.</p>
-
                         </td>
                     </tr>
                 </table><h2 id='enums' class='section-header'><a href="#enums">Enums</a></h2>
@@ -102,7 +102,6 @@
                                title='edge::value::Value'>Value</a></td>
                         <td class='docblock short'>
                              <p>Represents a JSON value</p>
-
                         </td>
                     </tr>
                 </table><h2 id='functions' class='section-header'><a href="#functions">Functions</a></h2>
@@ -112,7 +111,6 @@
                                title='edge::value::from_value'>from_value</a></td>
                         <td class='docblock short'>
                              <p>Shortcut function to decode a JSON <code>Value</code> into a <code>T</code></p>
-
                         </td>
                     </tr>
                 
@@ -121,7 +119,6 @@
                                title='edge::value::to_value'>to_value</a></td>
                         <td class='docblock short'>
                              <p>Shortcut function to encode a <code>T</code> into a JSON <code>Value</code></p>
-
                         </td>
                     </tr>
                 </table></section>
@@ -167,7 +164,7 @@
 
                 <p>
                     Search functions by type signature (e.g.
-                    <code>vec -> usize</code>)
+                    <code>vec -> usize</code> or <code>* -> vec</code>)
                 </p>
             </div>
         </div>
