@@ -24,77 +24,54 @@ use buffer::Buffer;
 
 #[derive(Debug)]
 pub struct Resp {
-    status: RefCell<Status>,
-    headers: RefCell<Headers>,
-    body: RefCell<Buffer>,
-
-    notify: AtomicBool,
-    ctrl: Control
+    status: Status,
+    headers: Headers,
+    body: Buffer
 }
 
-// no worries, the resp is always modified by only one thread at a time
-unsafe impl Sync for Resp {}
-
 impl Resp {
-    pub fn new(ctrl: Control) -> Resp {
+    pub fn new() -> Resp {
         Resp {
-            status: RefCell::new(Status::Ok),
-            headers: RefCell::new(Headers::default()),
-            body: RefCell::new(Buffer::new()),
-
-            notify: AtomicBool::new(false),
-            ctrl: ctrl
+            status: Status::Ok,
+            headers: Headers::default(),
+            body: Buffer::new()
         }
     }
 
-    fn status(&self, status: Status) {
-        *self.status.borrow_mut() = status;
+    fn status(&mut self, status: Status) {
+        self.status = status;
     }
 
     fn has_header<H: Header>(&self) -> bool {
-        self.headers.borrow().has::<H>()
+        self.headers.has::<H>()
     }
 
-    fn header<H: Header>(&self, header: H) {
-        self.headers.borrow_mut().set(header);
+    fn header<H: Header>(&mut self, header: H) {
+        self.headers.set(header);
     }
 
-    fn header_raw<K: Into<Cow<'static, str>> + Debug>(&self, name: K, value: Vec<Vec<u8>>) {
-        self.headers.borrow_mut().set_raw(name, value);
+    fn header_raw<K: Into<Cow<'static, str>> + Debug>(&mut self, name: K, value: Vec<Vec<u8>>) {
+        self.headers.set_raw(name, value);
     }
 
-    fn push_cookie(&self, cookie: Cookie) {
-        self.headers.borrow_mut().get_mut::<SetCookie>().unwrap().push(cookie)
+    fn push_cookie(&mut self, cookie: Cookie) {
+        self.headers.get_mut::<SetCookie>().unwrap().push(cookie)
     }
 
     fn len(&self) -> usize {
-        self.body.borrow().len()
+        self.body.len()
     }
 
-    fn append<D: AsRef<[u8]>>(&self, content: D) {
-        self.body.borrow_mut().append(content.as_ref());
+    fn append<D: AsRef<[u8]>>(&mut self, content: D) {
+        self.body.append(content.as_ref());
     }
 
-    fn send<D: Into<Vec<u8>>>(&self, content: D) {
-        self.body.borrow_mut().send(content);
+    fn send<D: Into<Vec<u8>>>(&mut self, content: D) {
+        self.body.send(content);
     }
 
     pub fn deconstruct(self) -> (Status, Headers, Buffer) {
-        (self.status.into_inner(),
-        self.headers.into_inner(),
-        self.body.into_inner())
-    }
-
-    fn done(&self) {
-        if self.notify.load(Ordering::Acquire) {
-            self.ctrl.ready(Next::write()).unwrap();
-        }
-    }
-}
-
-pub fn set_notify(resp: &Option<Arc<Resp>>) {
-    if let Some(ref arc) = *resp {
-        arc.notify.store(true, Ordering::Release);   
+        (self.status, self.headers, self.body)
     }
 }
 
@@ -106,27 +83,14 @@ pub fn set_notify(resp: &Option<Arc<Resp>>) {
 ///
 /// The response is sent when it is dropped.
 pub struct Response {
-    resp: Option<Arc<Resp>>
+    ended_or_notify: Arc<AtomicBool>,
+    ctrl: Arc<Control>,
+    resp: Option<Arc<RefCell<Resp>>>
 }
 
-impl Drop for Response {
-    fn drop(&mut self) {
-        // this is to make sure that we remove this Response's strong reference to Resp
-        // *before* we notify the handler, so the call to Arc::get_mut succeeds
-        let resp = self.resp.as_ref().unwrap().as_ref() as *const Resp;
-
-        // drop Arc
-        {
-            self.resp.take().unwrap();
-        }
-
-        // no worries: Resp is not dropped when the Arc is dropped,
-        // because the handler outlives us, therefore the pointer is always valid here.
-        unsafe {
-            (*resp).done();
-        }
-    }
-}
+// no worries, the response is always modified by only one thread at a time
+unsafe impl Send for Response {}
+unsafe impl Sync for Response {}
 
 fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
     for it in try!(read_dir("views/partials")) {
@@ -140,21 +104,67 @@ fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
     Ok(())
 }
 
-pub fn new(resp: &Option<Arc<Resp>>) -> Response {
+pub fn new(control: Control) -> Response {
     Response {
-        resp: Some(resp.as_ref().unwrap().clone())
+        ended_or_notify: Arc::new(AtomicBool::new(false)),
+        ctrl: Arc::new(control),
+        resp: Some(Arc::new(RefCell::new(Resp::new())))
+    }
+}
+
+pub fn clone(response: &Response) -> Response {
+    Response {
+        ended_or_notify: response.ended_or_notify.clone(),
+        ctrl: response.ctrl.clone(),
+        resp: Some(response.resp.as_ref().unwrap().clone())
+    }
+}
+
+/// Deconstructs the given response.
+pub fn deconstruct(response: &mut Response) -> (Status, Headers, Buffer) {
+    let resp = Arc::try_unwrap(response.resp.take().unwrap()).unwrap().into_inner();
+    resp.deconstruct()
+}
+
+/// two possible cases:
+///   - done before can_write: in synchronous style, done is called first,
+///     sets ended_or_notify to true and does not notify the handler
+///   - can_write before done: response not done yet, can_write is called first,
+///     sets ended_or_notify to true so that when done is called, it will notify the handler
+pub fn can_write(response: &mut Response) -> bool {
+    if response.ended_or_notify.compare_and_swap(false, true, Ordering::AcqRel) {
+        // if true, response already ended, we can write it
+        true
+    } else {
+        // if false, response did not end yet
+        // ended has been set to true to mean "need to notify handler"
+        false
     }
 }
 
 impl Response {
 
-    fn resp(&self) -> &Resp {
+    fn resp(&self) -> &RefCell<Resp> {
         &self.resp.as_ref().unwrap()
+    }
+
+    fn done(&mut self) {
+        if self.ended_or_notify.compare_and_swap(false, true, Ordering::AcqRel) {
+            // if true, means we need to notify, the flag is not updated
+
+            // drop Arc to make sure that we remove this Response's strong reference to Resp
+            // *before* we notify the handler, so the call to Arc::try_unwrap succeeds
+            let _ = self.resp.take().unwrap();
+            self.ctrl.ready(Next::write()).unwrap();
+        } else {
+            // if previously false: no need to notify
+            // ended has been set to true to mean "response ended"
+        }
     }
 
     /// Sets the status code of this response.
     pub fn status(&mut self, status: Status) -> &mut Self {
-        self.resp().status(status);
+        self.resp().borrow_mut().status(status);
         self
     }
 
@@ -181,13 +191,13 @@ impl Response {
 
     /// Sets the given header.
     pub fn header<H: Header>(&mut self, header: H) -> &mut Self {
-        self.resp().header(header);
+        self.resp().borrow_mut().header(header);
         self
     }
 
     /// Sets the given header with raw strings.
     pub fn header_raw<K: Into<Cow<'static, str>> + Debug, V: Into<Vec<u8>>>(&mut self, name: K, value: V) -> &mut Self {
-        self.resp().header_raw(name, vec![value.into()]);
+        self.resp().borrow_mut().header_raw(name, vec![value.into()]);
         self
     }
 
@@ -195,6 +205,7 @@ impl Response {
     pub fn end(mut self, status: Status) {
         self.status(status);
         self.len(0);
+        self.done();
     }
 
     /// Renders the template at the given path using the given data.
@@ -212,16 +223,17 @@ impl Response {
     /// Sends the given content and ends this response.
     /// Status defaults to 200 Ok, headers must have been set before this method is called.
     pub fn send<D: Into<Vec<u8>>>(mut self, content: D) {
-        self.resp().send(content);
-        let length = self.resp().len();
+        self.resp().borrow_mut().send(content);
+        let length = self.resp().borrow().len();
         self.len(length as u64);
+        self.done();
     }
 
     /// Appends the given content to this response's body.
     /// Will change to support asynchronous use case.
     pub fn append<D: AsRef<[u8]>>(&mut self, content: D) {
-        self.resp().append(content);
-        let length = self.resp().len() as u64;
+        self.resp().borrow_mut().append(content);
+        let length = self.resp().borrow().len() as u64;
         self.len(length);
     }
 
@@ -229,7 +241,8 @@ impl Response {
     /// Known extensions are htm, html, jpg, jpeg, png, js, css.
     /// If the file does not exist, this method sends a 404 Not Found response.
     pub fn send_file<P: AsRef<Path>>(mut self, path: P) {
-        if !self.resp().has_header::<ContentType>() {
+        let need_content_type = !self.resp().borrow().has_header::<ContentType>();
+        if need_content_type {
             let extension = path.as_ref().extension();
             if let Some(ext) = extension {
                 let content_type = match ext.to_string_lossy().as_ref() {
@@ -242,7 +255,7 @@ impl Response {
                 };
 
                 if let Some(content_type) = content_type {
-                    self.resp().header(content_type);
+                    self.resp().borrow_mut().header(content_type);
                 }
             }
         }
@@ -279,10 +292,12 @@ impl Response {
 
     /// Sets the given cookie.
     pub fn cookie(&mut self, cookie: Cookie) {
-        if self.resp().has_header::<SetCookie>() {
-            self.resp().push_cookie(cookie)
+        let resp = self.resp();
+        let has_cookie_header = resp.borrow().has_header::<SetCookie>();
+        if has_cookie_header {
+            resp.borrow_mut().push_cookie(cookie)
         } else {
-            self.resp().header(SetCookie(vec![cookie]))
+            resp.borrow_mut().header(SetCookie(vec![cookie]))
         }
     }
 }

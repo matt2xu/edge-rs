@@ -196,7 +196,6 @@ pub use router::Callback;
 
 use buffer::Buffer;
 use router::Router;
-use response::Resp;
 
 /// Structure for an Edge application.
 pub struct Edge<T: Send + Sync> {
@@ -260,7 +259,7 @@ pub struct EdgeHandler<T: Send + Sync> {
 
     request: Option<Request>,
     body: Option<Buffer>,
-    resp: Option<Arc<Resp>>
+    response: Response
 }
 
 impl<T: 'static + Send + Sync> HandlerFactory<HttpStream> for Edge<T> {
@@ -273,16 +272,9 @@ impl<T: 'static + Send + Sync> HandlerFactory<HttpStream> for Edge<T> {
 
             request: None,
             body: None,
-            resp: Some(Arc::new(Resp::new(control)))
+            response: response::new(control)
         }
     }
-}
-
-fn is_response_done(resp_opt: &mut Option<Arc<Resp>>) -> bool {
-    if let Some(ref mut arc) = *resp_opt {
-        return Arc::get_mut(arc).is_some();
-    }
-    false
 }
 
 impl<T: 'static + Send + Sync> EdgeHandler<T> {
@@ -290,23 +282,22 @@ impl<T: 'static + Send + Sync> EdgeHandler<T> {
         let req = &mut self.request.as_mut().unwrap();
 
         if let Some(callback) = self.router.find_callback(req) {
-            let res = response::new(&self.resp);
+            let res = response::clone(&self.response);
             callback(&self.app, req, res);
         } else {
             println!("route not found for path {:?}", req.path());
-            let mut res = response::new(&self.resp);
+            let mut res = response::clone(&self.response);
             res.status(Status::NotFound);
             res.content_type("text/plain");
             res.send(format!("not found: {:?}", req.path()));
         }
 
-        if is_response_done(&mut self.resp) {
+        if response::can_write(&mut self.response) {
             println!("response done, return Next::write after callback");
             Next::write()
         } else {
             // otherwise we ask the Response to notify us, and wait
             println!("response not done, return Next::wait after callback");
-            response::set_notify(&self.resp);
             Next::wait()
         }
     }
@@ -335,7 +326,7 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
                 }
             },
             Err(error) => {
-                let mut res = response::new(&self.resp);
+                let mut res = response::clone(&self.response);
                 res.status(Status::BadRequest);
                 res.content_type("text/plain");
                 res.send(error.to_string());
@@ -364,9 +355,7 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
         println!("on_response");
 
         // we got here from callback directly or Resp notified the Control
-        let resp = Arc::try_unwrap(self.resp.take().unwrap()).unwrap();
-
-        let (status, headers, body) = resp.deconstruct();
+        let (status, headers, body) = response::deconstruct(&mut self.response);
         res.set_status(status);
         *res.headers_mut() = headers;
 
