@@ -167,6 +167,7 @@ extern crate url;
 extern crate handlebars;
 extern crate serde;
 extern crate serde_json;
+extern crate deque;
 
 pub use hyper::header as header;
 pub use header::CookiePair as Cookie;
@@ -368,26 +369,54 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
         res.set_status(self.holder.get_status());
         self.holder.set_headers(res.headers_mut());
 
-        if self.holder.body().is_empty() {
-            println!("has no body, ending");
-            Next::end()
-        } else {
+        if !self.holder.body().is_empty() {
             println!("has body");
             Next::write()
+        } else if self.holder.is_streaming() {
+            println!("streaming mode, waiting");
+            Next::wait()
+        } else {
+            println!("has no body, ending");
+            Next::end()
         }
     }
 
     fn on_response_writable(&mut self, transport: &mut Encoder<HttpStream>) -> Next {
         println!("on_response_writable");
 
-        let body = self.holder.body();
-        if body.is_empty() {
-            // done writing the buffer
-            println!("done writing");
-            Next::end()
+        if self.holder.is_streaming() {
+            if self.body.is_none() {
+                self.body = self.holder.pop();
+            }
+
+            if let Some(ref mut body) = self.body {
+                if body.is_empty() {
+                    // done writing the buffer
+                    println!("done writing");
+                    return Next::end();
+                } else {
+                    // repeatedly write the body here with Next::write
+                    body.write(transport);
+                    if !body.is_empty() {
+                        return Next::write();
+                    }
+                }
+            } else {
+                return Next::wait();
+            }
+
+            self.body = None;
+            Next::write()
         } else {
-            // repeatedly write the body here with Next::write
-            body.write(transport)
+            let body = self.holder.body();
+            if body.is_empty() {
+                // done writing the buffer
+                println!("done writing");
+                Next::end()
+            } else {
+                // repeatedly write the body here with Next::write
+                body.write(transport)
+            }
         }
     }
 }

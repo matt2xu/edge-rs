@@ -23,12 +23,14 @@ use std::boxed::Box;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use buffer::Buffer;
+use deque::{self, Stealer, Worker};
 
-#[derive(Debug)]
 pub struct Resp {
     status: Status,
     headers: Headers,
     body: Buffer,
+    worker: Option<Worker<Buffer>>,
+    stealer: Option<Stealer<Buffer>>,
 
     ctrl: Control,
     ended_or_notify: AtomicBool
@@ -40,6 +42,8 @@ impl Resp {
             status: Status::Ok,
             headers: Headers::default(),
             body: Buffer::new(),
+            worker: None,
+            stealer: None,
 
             ctrl: ctrl,
             ended_or_notify: AtomicBool::new(false)
@@ -68,11 +72,21 @@ impl Resp {
     fn done(&self) {
         if self.ended_or_notify.compare_and_swap(false, true, Ordering::AcqRel) {
             // if true, means we need to notify, the flag is not updated
-            self.ctrl.ready(Next::write()).unwrap();
+            self.notify();
         } else {
             // if previously false: no need to notify
             // ended has been set to true to mean "response ended"
         }
+    }
+
+    /// notify handler we have something to write
+    /// called by done and append
+    fn notify(&self) {
+        self.ctrl.ready(Next::write()).unwrap();
+    }
+
+    fn is_streaming(&self) -> bool {
+        self.worker.is_some()
     }
 
     fn status(&mut self, status: Status) {
@@ -100,11 +114,18 @@ impl Resp {
     }
 
     fn append<D: AsRef<[u8]>>(&self, content: D) {
-        // TODO use deque self.body.append(content.as_ref());
+        self.worker.as_ref().unwrap().push(content.as_ref().into());
+        self.notify();
     }
 
     fn send<D: Into<Vec<u8>>>(&mut self, content: D) {
         self.body.send(content);
+    }
+
+    fn init_deque(&mut self) {
+        let (worker, stealer) = deque::new();
+        self.worker = Some(worker);
+        self.stealer = Some(stealer);
     }
 }
 
@@ -124,6 +145,7 @@ impl ResponseHolder {
     pub fn new_response(&mut self) -> Response {
         Response {
             resp: &mut *self.resp as *mut Resp,
+            streaming: false,
             _marker: PhantomData
         }
     }
@@ -136,8 +158,20 @@ impl ResponseHolder {
         *headers = self.resp.headers.clone();
     }
 
+    pub fn is_streaming(&self) -> bool {
+        self.resp.is_streaming()
+    }
+
     pub fn body(&mut self) -> &mut Buffer {
         &mut self.resp.body
+    }
+
+    pub fn pop(&mut self) -> Option<Buffer> {
+        match self.resp.stealer.as_ref().unwrap().steal() {
+            deque::Data(buffer) => Some(buffer),
+            deque::Empty => None,
+            deque::Abort => panic!("abort")
+        }
     }
 
     /// two possible cases:
@@ -159,6 +193,7 @@ impl ResponseHolder {
 /// The response is sent when it is dropped.
 pub struct Response<W: Any = Fresh> {
     resp: *mut Resp,
+    streaming: bool,
     _marker: PhantomData<W>
 }
 
@@ -167,13 +202,22 @@ unsafe impl Send for Response {}
 
 impl Drop for ResponseHolder {
     fn drop(&mut self) {
-        println!("dropping response holder");
+        println!("drop response holder");
     }
 }
 
 impl<T: Any> Drop for Response<T> {
     fn drop(&mut self) {
-        println!("dropping response");
+        println!("drop response (streaming? {})", self.streaming);
+        if self.streaming {
+            self.resp().append(&[]);
+        }
+    }
+}
+
+impl Drop for Resp {
+    fn drop(&mut self) {
+        println!("drop resp");
     }
 }
 
@@ -321,19 +365,22 @@ impl Response<Fresh> {
 
     /// Moves to streaming mode.
     pub fn stream(self) -> Response<Streaming> {
+        self.resp_mut().init_deque();
         self.done();
+
         Response {
             resp: self.resp,
+            streaming: true,
             _marker: PhantomData
         }
     }
 }
 
-
 impl Response<Streaming> {
     /// Appends the given content to this response's body.
     /// Will change to support asynchronous use case.
     pub fn append<D: AsRef<[u8]>>(&mut self, content: D) {
+        println!("append {} bytes", content.as_ref().len());
         self.resp().append(content);
     }
 }

@@ -32,10 +32,6 @@ impl Buffer {
         }
     }
 
-    pub fn append(&mut self, bytes: &[u8]) {
-        self.content.extend_from_slice(bytes);
-    }
-
     /// used when writing to check whether the buffer still has data
     pub fn is_empty(&self) -> bool { self.pos == self.len() }
 
@@ -122,5 +118,15 @@ impl Buffer {
 impl AsRef<[u8]> for Buffer {
     fn as_ref(&self) -> &[u8] {
         &self.content
+    }
+}
+
+impl<'a> From<&'a [u8]> for Buffer {
+    fn from(content: &[u8]) -> Buffer {
+        Buffer {
+            content: content.to_vec(),
+            pos: 0,
+            growable: Some(16)
+        }
     }
 }

@@ -100,7 +100,7 @@ impl MyApp {
             thread::sleep(Duration::from_secs(1));
             res.append(b"tata");
             thread::sleep(Duration::from_secs(1));
-            res.append(b"tata");
+            res.append(b"titi");
         });
     }
 
