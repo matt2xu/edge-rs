@@ -365,16 +365,14 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
         println!("on_response");
 
         // we got here from callback directly or Resp notified the Control
-        let (status, headers, body) = self.holder.deconstruct();
-        res.set_status(status);
-        *res.headers_mut() = headers;
+        res.set_status(self.holder.get_status());
+        self.holder.set_headers(res.headers_mut());
 
-        if body.is_empty() {
+        if self.holder.body().is_empty() {
             println!("has no body, ending");
             Next::end()
         } else {
             println!("has body");
-            self.body = Some(body);
             Next::write()
         }
     }
@@ -382,7 +380,7 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
     fn on_response_writable(&mut self, transport: &mut Encoder<HttpStream>) -> Next {
         println!("on_response_writable");
 
-        let body = self.body.as_mut().unwrap();
+        let body = self.holder.body();
         if body.is_empty() {
             // done writing the buffer
             println!("done writing");

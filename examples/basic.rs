@@ -89,12 +89,13 @@ impl MyApp {
         });
     }
 
-    fn streaming(&self, _req: &mut Request, mut res: Response) {
+    fn streaming(&self, _req: &mut Request, res: Response) {
         use std::thread;
         use std::time::Duration;
 
         thread::spawn(move || {
             thread::sleep(Duration::from_secs(1));
+            let mut res = res.stream();
             res.append(b"toto");
             thread::sleep(Duration::from_secs(1));
             res.append(b"tata");

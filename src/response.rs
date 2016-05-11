@@ -10,13 +10,17 @@ use serde::ser::Serialize as ToJson;
 
 pub use serde_json::value as value;
 
+use std::any::Any;
 use std::fmt::Debug;
 use std::borrow::Cow;
 use std::io::{ErrorKind, Read, Result, Write};
+use std::marker::PhantomData;
+
 use std::fs::{File, read_dir};
 use std::path::Path;
 
 use std::cell::UnsafeCell;
+use std::ptr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -73,10 +77,6 @@ impl Resp {
         }
     }
 
-    pub fn deconstruct(self) -> (Status, Headers, Buffer) {
-        (self.status, self.headers, self.body)
-    }
-
     fn status(&mut self, status: Status) {
         self.status = status;
     }
@@ -101,8 +101,8 @@ impl Resp {
         self.body.len()
     }
 
-    fn append<D: AsRef<[u8]>>(&mut self, content: D) {
-        self.body.append(content.as_ref());
+    fn append<D: AsRef<[u8]>>(&self, content: D) {
+        // TODO use deque self.body.append(content.as_ref());
     }
 
     fn send<D: Into<Vec<u8>>>(&mut self, content: D) {
@@ -112,27 +112,42 @@ impl Resp {
 
 /// This holds data for the response.
 pub struct ResponseHolder {
-    resp: Option<Arc<UnsafeCell<Resp>>>
+    resp: Arc<UnsafeCell<Resp>>
 }
 
 impl ResponseHolder {    
 
     pub fn new(control: Control) -> ResponseHolder {
         ResponseHolder {
-            resp: Some(Arc::new(UnsafeCell::new(Resp::new(control))))
+            resp: Arc::new(UnsafeCell::new(Resp::new(control)))
         }
     }
 
     pub fn new_response(&mut self) -> Response {
         Response {
-            resp: self.resp.as_ref().unwrap().get()
+            resp: self.resp.get(),
+            _marker: PhantomData
         }
     }
 
-    /// Takes the Resp out of this response holder and deconstructs it.
-    pub fn deconstruct(&mut self) -> (Status, Headers, Buffer) {
-        let resp = unsafe { Arc::try_unwrap(self.resp.take().unwrap()).unwrap().into_inner() };
-        resp.deconstruct()
+    fn resp(&self) -> &Resp {
+        unsafe { &*self.resp.get() }
+    }
+
+    fn resp_mut(&self) -> &mut Resp {
+        unsafe { &mut *self.resp.get() }
+    }
+
+    pub fn get_status(&self) -> Status {
+        self.resp().status
+    }
+
+    pub fn set_headers(&self, headers: &mut Headers) {
+        *headers = unsafe { ptr::read(&self.resp().headers) };
+    }
+
+    pub fn body(&self) -> &mut Buffer {
+        &mut self.resp_mut().body
     }
 
     /// two possible cases:
@@ -141,12 +156,7 @@ impl ResponseHolder {
     ///   - can_write before done: response not done yet, can_write is called first,
     ///     sets ended_or_notify to true so that when done is called, it will notify the handler
     pub fn can_write(&self) -> bool {
-        if let Some(ref resp) = self.resp {
-            unsafe { return (&*(resp.get())).can_write(); }
-        }
-
-        // should not happen
-        false
+        unsafe { return (&*(self.resp.get())).can_write(); }
     }
 }
 
@@ -157,24 +167,13 @@ impl ResponseHolder {
 /// or deferred pending some computation (asynchronous mode).
 ///
 /// The response is sent when it is dropped.
-pub struct Response {
-    resp: *mut Resp
+pub struct Response<W: Any = Fresh> {
+    resp: *mut Resp,
+    _marker: PhantomData<W>
 }
 
 // no worries, the response is always modified by only one thread at a time
 unsafe impl Send for Response {}
-
-fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
-    for it in try!(read_dir("views/partials")) {
-        let entry = try!(it);
-        let path = entry.path();
-        if path.extension().is_some() && path.extension().unwrap() == "hbs" {
-            let name = path.file_stem().unwrap().to_str().unwrap();
-            handlebars.register_template_file(name, path.as_path()).unwrap();
-        }
-    }
-    Ok(())
-}
 
 impl Drop for ResponseHolder {
     fn drop(&mut self) {
@@ -182,14 +181,16 @@ impl Drop for ResponseHolder {
     }
 }
 
-impl Drop for Response {
+impl<T: Any> Drop for Response<T> {
     fn drop(&mut self) {
         println!("dropping response");
     }
 }
 
-impl Response {
+pub enum Fresh {}
+pub enum Streaming {}
 
+impl<W: Any> Response<W> {
     fn resp(&self) -> &Resp {
         unsafe {
             &*self.resp
@@ -205,7 +206,9 @@ impl Response {
     fn done(&self) {
         self.resp().done();
     }
+}
 
+impl Response<Fresh> {
     /// Sets the status code of this response.
     pub fn status(&mut self, status: Status) -> &mut Self {
         self.resp_mut().status(status);
@@ -222,15 +225,14 @@ impl Response {
         self.header(ContentLength(len))
     }
 
-    /// Sets the Location header.
-    pub fn location<S: Into<String>>(&mut self, url: S) -> &mut Self {
-        self.header(Location(url.into()))
-    }
-
-    /// Redirects to the given URL with the given status, or 302 Found if none is given.
-    pub fn redirect(mut self, url: &str, status: Option<Status>) {
-        self.location(url);
-        self.end(status.unwrap_or(Status::Found))
+    /// Sets the given cookie.
+    pub fn cookie(&mut self, cookie: Cookie) {
+        let has_cookie_header = self.resp().has_header::<SetCookie>();
+        if has_cookie_header {
+            self.resp_mut().push_cookie(cookie)
+        } else {
+            self.resp_mut().header(SetCookie(vec![cookie]))
+        }
     }
 
     /// Sets the given header.
@@ -243,6 +245,17 @@ impl Response {
     pub fn header_raw<K: Into<Cow<'static, str>> + Debug, V: Into<Vec<u8>>>(&mut self, name: K, value: V) -> &mut Self {
         self.resp_mut().header_raw(name, vec![value.into()]);
         self
+    }
+
+    /// Sets the Location header.
+    pub fn location<S: Into<String>>(&mut self, url: S) -> &mut Self {
+        self.header(Location(url.into()))
+    }
+
+    /// Redirects to the given URL with the given status, or 302 Found if none is given.
+    pub fn redirect(mut self, url: &str, status: Option<Status>) {
+        self.location(url);
+        self.end(status.unwrap_or(Status::Found))
     }
 
     /// Ends this response with the given status and an empty body
@@ -271,14 +284,6 @@ impl Response {
         let length = self.resp().len();
         self.len(length as u64);
         self.done();
-    }
-
-    /// Appends the given content to this response's body.
-    /// Will change to support asynchronous use case.
-    pub fn append<D: AsRef<[u8]>>(&mut self, content: D) {
-        self.resp_mut().append(content);
-        let length = self.resp().len() as u64;
-        self.len(length);
     }
 
     /// Sends the given file, setting the Content-Type based on the file's extension.
@@ -324,23 +329,33 @@ impl Response {
         }
     }
 
-    /*
-    /// Writes the body of this response using the given source function.
-    pub fn stream<F, R>(&mut self, source: F) -> Result<()> where F: FnOnce(&mut Write) -> Result<R> {
-        //let mut streaming = try!(self.inner.start());
-        //try!(source(&mut streaming));
-        //streaming.end()
-        Ok(())
-    }
-    */
-
-    /// Sets the given cookie.
-    pub fn cookie(&mut self, cookie: Cookie) {
-        let has_cookie_header = self.resp().has_header::<SetCookie>();
-        if has_cookie_header {
-            self.resp_mut().push_cookie(cookie)
-        } else {
-            self.resp_mut().header(SetCookie(vec![cookie]))
+    /// Moves to streaming mode.
+    pub fn stream(self) -> Response<Streaming> {
+        self.done();
+        Response {
+            resp: self.resp,
+            _marker: PhantomData
         }
     }
+}
+
+
+impl Response<Streaming> {
+    /// Appends the given content to this response's body.
+    /// Will change to support asynchronous use case.
+    pub fn append<D: AsRef<[u8]>>(&mut self, content: D) {
+        self.resp().append(content);
+    }
+}
+
+fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
+    for it in try!(read_dir("views/partials")) {
+        let entry = try!(it);
+        let path = entry.path();
+        if path.extension().is_some() && path.extension().unwrap() == "hbs" {
+            let name = path.file_stem().unwrap().to_str().unwrap();
+            handlebars.register_template_file(name, path.as_path()).unwrap();
+        }
+    }
+    Ok(())
 }
