@@ -19,9 +19,7 @@ use std::marker::PhantomData;
 use std::fs::{File, read_dir};
 use std::path::Path;
 
-use std::cell::UnsafeCell;
-use std::ptr;
-use std::sync::Arc;
+use std::boxed::Box;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use buffer::Buffer;
@@ -112,42 +110,34 @@ impl Resp {
 
 /// This holds data for the response.
 pub struct ResponseHolder {
-    resp: Arc<UnsafeCell<Resp>>
+    resp: Box<Resp>
 }
 
 impl ResponseHolder {    
 
     pub fn new(control: Control) -> ResponseHolder {
         ResponseHolder {
-            resp: Arc::new(UnsafeCell::new(Resp::new(control)))
+            resp: Box::new(Resp::new(control))
         }
     }
 
     pub fn new_response(&mut self) -> Response {
         Response {
-            resp: self.resp.get(),
+            resp: &mut *self.resp as *mut Resp,
             _marker: PhantomData
         }
     }
 
-    fn resp(&self) -> &Resp {
-        unsafe { &*self.resp.get() }
-    }
-
-    fn resp_mut(&self) -> &mut Resp {
-        unsafe { &mut *self.resp.get() }
-    }
-
     pub fn get_status(&self) -> Status {
-        self.resp().status
+        self.resp.status
     }
 
     pub fn set_headers(&self, headers: &mut Headers) {
-        *headers = unsafe { ptr::read(&self.resp().headers) };
+        *headers = self.resp.headers.clone();
     }
 
-    pub fn body(&self) -> &mut Buffer {
-        &mut self.resp_mut().body
+    pub fn body(&mut self) -> &mut Buffer {
+        &mut self.resp.body
     }
 
     /// two possible cases:
@@ -156,7 +146,7 @@ impl ResponseHolder {
     ///   - can_write before done: response not done yet, can_write is called first,
     ///     sets ended_or_notify to true so that when done is called, it will notify the handler
     pub fn can_write(&self) -> bool {
-        unsafe { return (&*(self.resp.get())).can_write(); }
+        self.resp.can_write()
     }
 }
 
