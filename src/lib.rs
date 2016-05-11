@@ -176,10 +176,10 @@ pub use hyper::status::StatusCode as Status;
 pub use serde_json::value as value;
 
 use header::ContentLength;
-use hyper::{Control, Decoder, Encoder, Method, Next, Get, Post, Head, Delete};
+use hyper::{Decoder, Encoder, Method, Next, Get, Post, Head, Delete};
 use hyper::method::Method::Put;
 use hyper::net::HttpStream;
-use hyper::server::{Handler, HandlerFactory, Server};
+use hyper::server::{Handler, Server};
 use hyper::server::{Request as HttpRequest, Response as HttpResponse};
 
 use std::io::{Read, Result, Write};
@@ -200,7 +200,7 @@ use response::ResponseHolder;
 use router::Router;
 
 /// Structure for an Edge application.
-pub struct Edge<T: Send + Sync> {
+pub struct Edge<T: Send> {
     addr: SocketAddr,
     inner: Arc<T>,
     router: Arc<Router<T>>
@@ -251,13 +251,24 @@ impl<T: 'static + Send + Sync> Edge<T> {
     /// Starts a server.
     pub fn start(self) -> Result<()> {
         let server = Server::http(&self.addr).unwrap();
-        server.handle(self).unwrap();
+        server.handle(move |control| {
+            println!("creating new edge handler");
+
+            EdgeHandler {
+                router: self.router.clone(),
+                app: self.inner.clone(),
+
+                request: None,
+                body: None,
+                holder: ResponseHolder::new(control)
+            }
+        }).unwrap();
         Ok(())
     }
 
 }
 
-pub struct EdgeHandler<T: Send + Sync> {
+pub struct EdgeHandler<T: Send> {
     router: Arc<Router<T>>,
     app: Arc<T>,
 
@@ -266,30 +277,13 @@ pub struct EdgeHandler<T: Send + Sync> {
     holder: ResponseHolder
 }
 
-impl<T: Send + Sync> Drop for EdgeHandler<T> {
+impl<T: Send> Drop for EdgeHandler<T> {
     fn drop(&mut self) {
         println!("dropping edge handler");
     }
 }
 
-impl<T: 'static + Send + Sync> HandlerFactory<HttpStream> for Edge<T> {
-    type Output = EdgeHandler<T>;
-
-    fn create(&mut self, control: Control) -> EdgeHandler<T> {
-        println!("creating new edge handler");
-
-        EdgeHandler {
-            router: self.router.clone(),
-            app: self.inner.clone(),
-
-            request: None,
-            body: None,
-            holder: ResponseHolder::new(control)
-        }
-    }
-}
-
-impl<T: 'static + Send + Sync> EdgeHandler<T> {
+impl<T: Send> EdgeHandler<T> {
     fn callback(&mut self) -> Next {
         let req = &mut self.request.as_mut().unwrap();
 
@@ -315,7 +309,7 @@ impl<T: 'static + Send + Sync> EdgeHandler<T> {
 }
 
 /// Implements Handler for our EdgeHandler.
-impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
+impl<T: Send> Handler<HttpStream> for EdgeHandler<T> {
     fn on_request(&mut self, req: HttpRequest) -> Next {
         println!("on_request");
 
