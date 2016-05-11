@@ -182,7 +182,7 @@ use hyper::server::{Handler, HandlerFactory, Server};
 use hyper::server::{Request as HttpRequest, Response as HttpResponse};
 
 use std::io::{Read, Result, Write};
-
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 mod buffer;
@@ -195,10 +195,12 @@ pub use response::Response;
 pub use router::Callback;
 
 use buffer::Buffer;
+use response::ResponseHolder;
 use router::Router;
 
 /// Structure for an Edge application.
 pub struct Edge<T: Send + Sync> {
+    addr: SocketAddr,
     inner: Arc<T>,
     router: Arc<Router<T>>
 }
@@ -206,10 +208,11 @@ pub struct Edge<T: Send + Sync> {
 impl<T: 'static + Send + Sync> Edge<T> {
 
     /// Creates an Edge application using the given inner structure.
-    pub fn new(inner: T) -> Edge<T> {
+    pub fn new(addr: &str, inner: T) -> Edge<T> {
         Edge {
+            addr: addr.parse().unwrap(),
             inner: Arc::new(inner),
-            router: Arc::new(Router::new())
+            router: Arc::new(Router::new(addr))
         }
     }
 
@@ -245,8 +248,8 @@ impl<T: 'static + Send + Sync> Edge<T> {
     }
 
     /// Starts a server.
-    pub fn start(self, addr: &str) -> Result<()> {
-        let server = Server::http(&addr.parse().unwrap()).unwrap();
+    pub fn start(self) -> Result<()> {
+        let server = Server::http(&self.addr).unwrap();
         server.handle(self).unwrap();
         Ok(())
     }
@@ -259,20 +262,28 @@ pub struct EdgeHandler<T: Send + Sync> {
 
     request: Option<Request>,
     body: Option<Buffer>,
-    response: Response
+    holder: ResponseHolder
+}
+
+impl<T: Send + Sync> Drop for EdgeHandler<T> {
+    fn drop(&mut self) {
+        println!("dropping edge handler");
+    }
 }
 
 impl<T: 'static + Send + Sync> HandlerFactory<HttpStream> for Edge<T> {
     type Output = EdgeHandler<T>;
 
     fn create(&mut self, control: Control) -> EdgeHandler<T> {
+        println!("creating new edge handler");
+
         EdgeHandler {
             router: self.router.clone(),
             app: self.inner.clone(),
 
             request: None,
             body: None,
-            response: response::new(control)
+            holder: ResponseHolder::new(control)
         }
     }
 }
@@ -282,17 +293,16 @@ impl<T: 'static + Send + Sync> EdgeHandler<T> {
         let req = &mut self.request.as_mut().unwrap();
 
         if let Some(callback) = self.router.find_callback(req) {
-            let res = response::clone(&self.response);
-            callback(&self.app, req, res);
+            callback(&self.app, req, self.holder.new_response());
         } else {
             println!("route not found for path {:?}", req.path());
-            let mut res = response::clone(&self.response);
+            let mut res = self.holder.new_response();
             res.status(Status::NotFound);
             res.content_type("text/plain");
             res.send(format!("not found: {:?}", req.path()));
         }
 
-        if response::can_write(&mut self.response) {
+        if self.holder.can_write() {
             println!("response done, return Next::write after callback");
             Next::write()
         } else {
@@ -308,7 +318,7 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
     fn on_request(&mut self, req: HttpRequest) -> Next {
         println!("on_request");
 
-        match request::new(req) {
+        match request::new(&self.router.base_url, req) {
             Ok(req) => {
                 self.body = match *req.method() {
                     Put | Post => Some(match req.headers().get::<ContentLength>() {
@@ -326,7 +336,7 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
                 }
             },
             Err(error) => {
-                let mut res = response::clone(&self.response);
+                let mut res = self.holder.new_response();
                 res.status(Status::BadRequest);
                 res.content_type("text/plain");
                 res.send(error.to_string());
@@ -355,13 +365,15 @@ impl<T: 'static + Send + Sync> Handler<HttpStream> for EdgeHandler<T> {
         println!("on_response");
 
         // we got here from callback directly or Resp notified the Control
-        let (status, headers, body) = response::deconstruct(&mut self.response);
+        let (status, headers, body) = self.holder.deconstruct();
         res.set_status(status);
         *res.headers_mut() = headers;
 
         if body.is_empty() {
+            println!("has no body, ending");
             Next::end()
         } else {
+            println!("has body");
             self.body = Some(body);
             Next::write()
         }

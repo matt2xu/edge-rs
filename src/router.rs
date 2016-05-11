@@ -6,6 +6,8 @@ use request;
 use request::Request;
 use response::Response;
 
+use url::Url;
+
 /// Signature for a callback method
 pub type Callback<T> = fn(&T, &mut Request, Response);
 
@@ -26,12 +28,14 @@ pub struct Route {
 
 /// Router structure
 pub struct Router<T> {
+    pub base_url: Url,
     routes: HashMap<Method, Vec<(Route, Callback<T>)>>
 }
 
 impl<T> Router<T> {
-    pub fn new() -> Router<T> {
+    pub fn new(addr: &str) -> Router<T> {
         Router {
+            base_url: Url::parse(&("http://".to_string() + addr)).unwrap(),
             routes: HashMap::new()
         }
     }

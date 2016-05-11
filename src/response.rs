@@ -16,7 +16,7 @@ use std::io::{ErrorKind, Read, Result, Write};
 use std::fs::{File, read_dir};
 use std::path::Path;
 
-use std::cell::RefCell;
+use std::cell::UnsafeCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -26,16 +26,55 @@ use buffer::Buffer;
 pub struct Resp {
     status: Status,
     headers: Headers,
-    body: Buffer
+    body: Buffer,
+
+    ctrl: Control,
+    ended_or_notify: AtomicBool
 }
 
 impl Resp {
-    pub fn new() -> Resp {
+    pub fn new(ctrl: Control) -> Resp {
         Resp {
             status: Status::Ok,
             headers: Headers::default(),
-            body: Buffer::new()
+            body: Buffer::new(),
+
+            ctrl: ctrl,
+            ended_or_notify: AtomicBool::new(false)
         }
+    }
+
+    /// called by handler to know whether we can write the response or not
+    ///
+    /// two possible cases:
+    ///   - done before can_write: in synchronous style, done is called first,
+    ///     sets ended_or_notify to true and does not notify the handler
+    ///   - can_write before done: response not done yet, can_write is called first,
+    ///     sets ended_or_notify to true so that when done is called, it will notify the handler
+    fn can_write(&self) -> bool {
+        if self.ended_or_notify.compare_and_swap(false, true, Ordering::AcqRel) {
+            // if true, response already ended, we can write it
+            true
+        } else {
+            // if false, response did not end yet
+            // ended has been set to true to mean "need to notify handler"
+            false
+        }
+    }
+
+    /// mirror function of can_write, called by Response
+    fn done(&self) {
+        if self.ended_or_notify.compare_and_swap(false, true, Ordering::AcqRel) {
+            // if true, means we need to notify, the flag is not updated
+            self.ctrl.ready(Next::write()).unwrap();
+        } else {
+            // if previously false: no need to notify
+            // ended has been set to true to mean "response ended"
+        }
+    }
+
+    pub fn deconstruct(self) -> (Status, Headers, Buffer) {
+        (self.status, self.headers, self.body)
     }
 
     fn status(&mut self, status: Status) {
@@ -69,9 +108,45 @@ impl Resp {
     fn send<D: Into<Vec<u8>>>(&mut self, content: D) {
         self.body.send(content);
     }
+}
 
-    pub fn deconstruct(self) -> (Status, Headers, Buffer) {
-        (self.status, self.headers, self.body)
+/// This holds data for the response.
+pub struct ResponseHolder {
+    resp: Option<Arc<UnsafeCell<Resp>>>
+}
+
+impl ResponseHolder {    
+
+    pub fn new(control: Control) -> ResponseHolder {
+        ResponseHolder {
+            resp: Some(Arc::new(UnsafeCell::new(Resp::new(control))))
+        }
+    }
+
+    pub fn new_response(&mut self) -> Response {
+        Response {
+            resp: self.resp.as_ref().unwrap().get()
+        }
+    }
+
+    /// Takes the Resp out of this response holder and deconstructs it.
+    pub fn deconstruct(&mut self) -> (Status, Headers, Buffer) {
+        let resp = unsafe { Arc::try_unwrap(self.resp.take().unwrap()).unwrap().into_inner() };
+        resp.deconstruct()
+    }
+
+    /// two possible cases:
+    ///   - done before can_write: in synchronous style, done is called first,
+    ///     sets ended_or_notify to true and does not notify the handler
+    ///   - can_write before done: response not done yet, can_write is called first,
+    ///     sets ended_or_notify to true so that when done is called, it will notify the handler
+    pub fn can_write(&self) -> bool {
+        if let Some(ref resp) = self.resp {
+            unsafe { return (&*(resp.get())).can_write(); }
+        }
+
+        // should not happen
+        false
     }
 }
 
@@ -83,14 +158,11 @@ impl Resp {
 ///
 /// The response is sent when it is dropped.
 pub struct Response {
-    ended_or_notify: Arc<AtomicBool>,
-    ctrl: Arc<Control>,
-    resp: Option<Arc<RefCell<Resp>>>
+    resp: *mut Resp
 }
 
 // no worries, the response is always modified by only one thread at a time
 unsafe impl Send for Response {}
-unsafe impl Sync for Response {}
 
 fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
     for it in try!(read_dir("views/partials")) {
@@ -104,67 +176,39 @@ fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
     Ok(())
 }
 
-pub fn new(control: Control) -> Response {
-    Response {
-        ended_or_notify: Arc::new(AtomicBool::new(false)),
-        ctrl: Arc::new(control),
-        resp: Some(Arc::new(RefCell::new(Resp::new())))
+impl Drop for ResponseHolder {
+    fn drop(&mut self) {
+        println!("dropping response holder");
     }
 }
 
-pub fn clone(response: &Response) -> Response {
-    Response {
-        ended_or_notify: response.ended_or_notify.clone(),
-        ctrl: response.ctrl.clone(),
-        resp: Some(response.resp.as_ref().unwrap().clone())
-    }
-}
-
-/// Deconstructs the given response.
-pub fn deconstruct(response: &mut Response) -> (Status, Headers, Buffer) {
-    let resp = Arc::try_unwrap(response.resp.take().unwrap()).unwrap().into_inner();
-    resp.deconstruct()
-}
-
-/// two possible cases:
-///   - done before can_write: in synchronous style, done is called first,
-///     sets ended_or_notify to true and does not notify the handler
-///   - can_write before done: response not done yet, can_write is called first,
-///     sets ended_or_notify to true so that when done is called, it will notify the handler
-pub fn can_write(response: &mut Response) -> bool {
-    if response.ended_or_notify.compare_and_swap(false, true, Ordering::AcqRel) {
-        // if true, response already ended, we can write it
-        true
-    } else {
-        // if false, response did not end yet
-        // ended has been set to true to mean "need to notify handler"
-        false
+impl Drop for Response {
+    fn drop(&mut self) {
+        println!("dropping response");
     }
 }
 
 impl Response {
 
-    fn resp(&self) -> &RefCell<Resp> {
-        &self.resp.as_ref().unwrap()
+    fn resp(&self) -> &Resp {
+        unsafe {
+            &*self.resp
+        }
     }
 
-    fn done(&mut self) {
-        if self.ended_or_notify.compare_and_swap(false, true, Ordering::AcqRel) {
-            // if true, means we need to notify, the flag is not updated
-
-            // drop Arc to make sure that we remove this Response's strong reference to Resp
-            // *before* we notify the handler, so the call to Arc::try_unwrap succeeds
-            let _ = self.resp.take().unwrap();
-            self.ctrl.ready(Next::write()).unwrap();
-        } else {
-            // if previously false: no need to notify
-            // ended has been set to true to mean "response ended"
+    fn resp_mut(&self) -> &mut Resp {
+        unsafe {
+            &mut *self.resp
         }
+    }
+
+    fn done(&self) {
+        self.resp().done();
     }
 
     /// Sets the status code of this response.
     pub fn status(&mut self, status: Status) -> &mut Self {
-        self.resp().borrow_mut().status(status);
+        self.resp_mut().status(status);
         self
     }
 
@@ -191,13 +235,13 @@ impl Response {
 
     /// Sets the given header.
     pub fn header<H: Header>(&mut self, header: H) -> &mut Self {
-        self.resp().borrow_mut().header(header);
+        self.resp_mut().header(header);
         self
     }
 
     /// Sets the given header with raw strings.
     pub fn header_raw<K: Into<Cow<'static, str>> + Debug, V: Into<Vec<u8>>>(&mut self, name: K, value: V) -> &mut Self {
-        self.resp().borrow_mut().header_raw(name, vec![value.into()]);
+        self.resp_mut().header_raw(name, vec![value.into()]);
         self
     }
 
@@ -223,8 +267,8 @@ impl Response {
     /// Sends the given content and ends this response.
     /// Status defaults to 200 Ok, headers must have been set before this method is called.
     pub fn send<D: Into<Vec<u8>>>(mut self, content: D) {
-        self.resp().borrow_mut().send(content);
-        let length = self.resp().borrow().len();
+        self.resp_mut().send(content);
+        let length = self.resp().len();
         self.len(length as u64);
         self.done();
     }
@@ -232,8 +276,8 @@ impl Response {
     /// Appends the given content to this response's body.
     /// Will change to support asynchronous use case.
     pub fn append<D: AsRef<[u8]>>(&mut self, content: D) {
-        self.resp().borrow_mut().append(content);
-        let length = self.resp().borrow().len() as u64;
+        self.resp_mut().append(content);
+        let length = self.resp().len() as u64;
         self.len(length);
     }
 
@@ -241,7 +285,7 @@ impl Response {
     /// Known extensions are htm, html, jpg, jpeg, png, js, css.
     /// If the file does not exist, this method sends a 404 Not Found response.
     pub fn send_file<P: AsRef<Path>>(mut self, path: P) {
-        let need_content_type = !self.resp().borrow().has_header::<ContentType>();
+        let need_content_type = !self.resp().has_header::<ContentType>();
         if need_content_type {
             let extension = path.as_ref().extension();
             if let Some(ext) = extension {
@@ -255,7 +299,7 @@ impl Response {
                 };
 
                 if let Some(content_type) = content_type {
-                    self.resp().borrow_mut().header(content_type);
+                    self.resp_mut().header(content_type);
                 }
             }
         }
@@ -292,12 +336,11 @@ impl Response {
 
     /// Sets the given cookie.
     pub fn cookie(&mut self, cookie: Cookie) {
-        let resp = self.resp();
-        let has_cookie_header = resp.borrow().has_header::<SetCookie>();
+        let has_cookie_header = self.resp().has_header::<SetCookie>();
         if has_cookie_header {
-            resp.borrow_mut().push_cookie(cookie)
+            self.resp_mut().push_cookie(cookie)
         } else {
-            resp.borrow_mut().header(SetCookie(vec![cookie]))
+            self.resp_mut().header(SetCookie(vec![cookie]))
         }
     }
 }

@@ -107,7 +107,7 @@ impl MyApp {
 
 fn main() {
     let app = MyApp::new();
-    let mut cter = Edge::new(app);
+    let mut cter = Edge::new("0.0.0.0:3000", app);
     cter.get("/", MyApp::home);
     cter.get("/hello/:first_name/:last_name", MyApp::hello);
     cter.get("/settings", MyApp::settings);
@@ -117,5 +117,5 @@ fn main() {
     cter.get("/streaming", MyApp::streaming);
 
     cter.post("/login", MyApp::login);
-    cter.start("0.0.0.0:3000").unwrap();
+    cter.start().unwrap();
 }

@@ -32,11 +32,10 @@ pub struct Request {
     body: Option<Buffer>
 }
 
-pub fn new(inner: HttpRequest) -> StdResult<Request, ParseError> {
+pub fn new(base_url: &Url, inner: HttpRequest) -> StdResult<Request, ParseError> {
     let (path, query, fragment) = match *inner.uri() {
         AbsolutePath(ref path) => {
-            let base = Url::parse("http://localhost").unwrap();
-            match Url::options().base_url(Some(&base)).parse(path) {
+            match base_url.join(path) {
                 Ok(url) => (url.path_segments().unwrap().map(|s| s.to_string()).collect(),
                     url.query().map(|s| s.to_string()),
                     url.fragment().map(|s| s.to_string())),
