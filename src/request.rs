@@ -24,33 +24,35 @@ use url::{ParseError, Url};
 /// Can be queried for the parameters that were matched by the router.
 pub struct Request {
     inner: HttpRequest,
+    url: Option<Url>,
     path: Vec<String>,
-    query: Option<String>,
-    fragment: Option<String>,
-
+    query: Option<BTreeMap<String, String>>,
     params: Option<BTreeMap<String, String>>,
     body: Option<Buffer>
 }
 
 pub fn new(base_url: &Url, inner: HttpRequest) -> StdResult<Request, ParseError> {
-    let (path, query, fragment) = match *inner.uri() {
-        AbsolutePath(ref path) => {
-            match base_url.join(path) {
-                Ok(url) => (url.path_segments().unwrap().map(|s| s.to_string()).collect(),
-                    url.query().map(|s| s.to_string()),
-                    url.fragment().map(|s| s.to_string())),
-                Err(e) => return Err(e)
-            }
-        },
-        Star => (vec!["*".to_owned()], None, None),
+    let url = match *inner.uri() {
+        AbsolutePath(ref path) => Some(try!(base_url.join(path))),
+        Star => None,
         _ => panic!("unsupported request URI")
+    };
+
+    let path = match url {
+        None => vec!["*".to_owned()],
+        Some(ref url) => url.path_segments().unwrap().map(|s| s.to_string()).collect()
+    };
+
+    let query = match url {
+        None => None,
+        Some(ref url) => Some(url.query_pairs().into_owned().collect())
     };
 
     Ok(Request {
         inner: inner,
+        url: url,
         path: path,
         query: query,
-        fragment: fragment,
         params: None,
         body: None})
 }
@@ -111,14 +113,17 @@ impl Request {
         &self.path
     }
 
-    /// Returns the query of this request (if any).
-    pub fn query(&self) -> Option<&str> {
-        self.query.as_ref().map(String::as_str)
+    /// Returns the parameter with the given name in this request's query (if any).
+    pub fn query(&self, key: &str) -> Option<&str> {
+        self.query.as_ref().map_or(None, |map| map.get(key).map(String::as_str))
     }
 
     /// Returns the fragment of this request (if any).
     pub fn fragment(&self) -> Option<&str> {
-        self.fragment.as_ref().map(String::as_str)
+        match self.url {
+            None => None,
+            Some(ref url) => url.fragment()
+        }
     }
 }
 
