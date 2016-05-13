@@ -298,7 +298,14 @@ impl Response<Fresh> {
     }
 
     /// Renders the template at the given path using the given data.
+    ///
+    /// If no Content-Type header is set, the content type is set to `text/html`.
     pub fn render<P: AsRef<Path>, T: ToJson>(self, path: P, data: T) {
+        let need_content_type = !self.resp().has_header::<ContentType>();
+        if need_content_type {
+            self.resp_mut().header(ContentType::html());
+        }
+
         let mut handlebars = Handlebars::new();
         let path = path.as_ref();
         let name = path.file_stem().unwrap().to_str().unwrap();
@@ -311,6 +318,7 @@ impl Response<Fresh> {
     }
 
     /// Sends the given content and ends this response.
+    ///
     /// Status defaults to 200 Ok, headers must have been set before this method is called.
     pub fn send<D: Into<Vec<u8>>>(mut self, content: D) {
         self.resp_mut().send(content);
@@ -319,6 +327,7 @@ impl Response<Fresh> {
     }
 
     /// Sends the given file, setting the Content-Type based on the file's extension.
+    ///
     /// Known extensions are htm, html, jpg, jpeg, png, js, css.
     /// If the file does not exist, this method sends a 404 Not Found response.
     pub fn send_file<P: AsRef<Path>>(mut self, path: P) {
@@ -374,7 +383,6 @@ impl Response<Fresh> {
 
 impl Response<Streaming> {
     /// Appends the given content to this response's body.
-    /// Will change to support asynchronous use case.
     pub fn append<D: AsRef<[u8]>>(&mut self, content: D) {
         println!("append {} bytes", content.as_ref().len());
         self.resp().append(content);
