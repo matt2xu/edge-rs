@@ -2,14 +2,14 @@ extern crate edge;
 
 use edge::{Edge, Cookie, Request, Response, Status};
 use edge::header::AccessControlAllowOrigin;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use std::collections::BTreeMap;
 use edge::value;
 
 struct MyApp {
     tmpl_path: String,
-    counter: Mutex<u32>
+    counter: AtomicUsize
 }
 
 impl MyApp {
@@ -17,16 +17,12 @@ impl MyApp {
     fn new() -> MyApp {
         MyApp {
             tmpl_path: "toto".to_owned(),
-            counter: Mutex::new(0)
+            counter: AtomicUsize::new(0)
         }
     }
 
     fn home(&self, _req: &mut Request, mut res: Response) {
-        let cnt = {
-            let mut counter = self.counter.lock().unwrap();
-            *counter += 1;
-            *counter
-        };
+        let cnt = self.counter.fetch_add(1, Ordering::SeqCst);
 
         println!("in home, count = {}, path = {}", cnt, self.tmpl_path);
 

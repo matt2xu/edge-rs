@@ -210,7 +210,10 @@ impl<T: Any> Drop for Response<T> {
     fn drop(&mut self) {
         println!("drop response (streaming? {})", self.streaming);
         if self.streaming {
+            // append an empty buffer to indicate there is no more data left, and notify handler
             self.resp().append(&[]);
+        } else {
+            self.resp().done();
         }
     }
 }
@@ -235,10 +238,6 @@ impl<W: Any> Response<W> {
         unsafe {
             &mut *self.resp
         }
-    }
-
-    fn done(&self) {
-        self.resp().done();
     }
 }
 
@@ -296,7 +295,6 @@ impl Response<Fresh> {
     pub fn end(mut self, status: Status) {
         self.status(status);
         self.len(0);
-        self.done();
     }
 
     /// Renders the template at the given path using the given data.
@@ -306,7 +304,8 @@ impl Response<Fresh> {
         let name = path.file_stem().unwrap().to_str().unwrap();
 
         handlebars.register_template_file(name, path).unwrap();
-        register_partials(&mut handlebars).unwrap();
+        // ignore errors if partials folder does not exist
+        let _ = register_partials(&mut handlebars);
         let result = handlebars.render(name, &data);
         self.send(result.unwrap())
     }
@@ -317,7 +316,6 @@ impl Response<Fresh> {
         self.resp_mut().send(content);
         let length = self.resp().len();
         self.len(length as u64);
-        self.done();
     }
 
     /// Sends the given file, setting the Content-Type based on the file's extension.
@@ -366,8 +364,6 @@ impl Response<Fresh> {
     /// Moves to streaming mode.
     pub fn stream(self) -> Response<Streaming> {
         self.resp_mut().init_deque();
-        self.done();
-
         Response {
             resp: self.resp,
             streaming: true,
