@@ -176,11 +176,12 @@ pub use hyper::status::StatusCode as Status;
 pub use serde_json::value as value;
 
 use header::ContentLength;
-use hyper::{Decoder, Encoder, Method, Next, Get, Post, Head, Delete};
+
+use hyper::{Client as HttpClient, Decoder, Encoder, Method, Next, Get, Post, Head, Delete};
+use hyper::client::{Request as ClientRequest, Response as ClientResponse};
 use hyper::method::Method::Put;
 use hyper::net::HttpStream;
-use hyper::server::{Handler, Server};
-use hyper::server::{Request as HttpRequest, Response as HttpResponse};
+use hyper::server::{Handler, Server, Request as HttpRequest, Response as HttpResponse};
 
 use std::io::{Read, Result, Write};
 use std::net::SocketAddr;
@@ -412,5 +413,64 @@ impl<T: Send> Handler<HttpStream> for EdgeHandler<T> {
                 body.write(transport)
             }
         }
+    }
+}
+
+pub struct Client {
+    inner: HttpClient<ClientHandler>
+}
+
+impl Client {
+    pub fn new() -> Client {
+        Client {
+            inner: HttpClient::new().unwrap()
+        }
+    }
+
+    pub fn request<'a, I: AsRef<str>>(&self, url: I) {
+        let _ = self.inner.request(url.as_ref().parse().unwrap(), ClientHandler);
+    }
+}
+
+use std::io;
+
+struct ClientHandler;
+impl hyper::client::Handler<HttpStream> for ClientHandler {
+
+    fn on_request(&mut self, _req: &mut ClientRequest) -> Next {
+        Next::read()
+    }
+
+    fn on_request_writable(&mut self, _encoder: &mut Encoder<HttpStream>) -> Next {
+        Next::read()
+    }
+
+    fn on_response(&mut self, res: ClientResponse) -> Next {
+        println!("Response: {}", res.status());
+        println!("Headers:\n{}", res.headers());
+        Next::read()
+    }
+
+    fn on_response_readable(&mut self, decoder: &mut Decoder<HttpStream>) -> Next {
+        let mut buf = vec![0; 65536];
+        match decoder.read(&mut buf[..]) {
+            Ok(0) => Next::end(),
+            Ok(n) => {
+                println!("read {} bytes", n);
+                Next::read()
+            },
+            Err(e) => match e.kind() {
+                io::ErrorKind::WouldBlock => Next::read(),
+                _ => {
+                    println!("ERROR: {}", e);
+                    Next::end()
+                }
+            }
+        }
+    }
+
+    fn on_error(&mut self, err: hyper::Error) -> Next {
+        println!("ERROR: {}", err);
+        Next::remove()
     }
 }
