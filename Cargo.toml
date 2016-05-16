@@ -10,7 +10,6 @@ authors = ["Matthieu Wipliez <matthieu.wipliez@gmail.com>"]
 keywords = ["http", "web", "framework", "asynchronous"]
 
 [dependencies]
-time = "0.1"
 url = "1.0"
 deque = "0.3"
 serde = "0.7"
