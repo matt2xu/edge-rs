@@ -121,10 +121,10 @@ impl AsRef<[u8]> for Buffer {
     }
 }
 
-impl<'a> From<&'a [u8]> for Buffer {
-    fn from(content: &[u8]) -> Buffer {
+impl From<Vec<u8>> for Buffer {
+    fn from(content: Vec<u8>) -> Buffer {
         Buffer {
-            content: content.to_vec(),
+            content: content,
             pos: 0,
             growable: Some(16)
         }

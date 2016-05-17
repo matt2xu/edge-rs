@@ -113,8 +113,8 @@ impl Resp {
         self.body.len()
     }
 
-    fn append<D: AsRef<[u8]>>(&self, content: D) {
-        self.worker.as_ref().unwrap().push(content.as_ref().into());
+    fn append<D: Into<Buffer>>(&self, buffer: D) {
+        self.worker.as_ref().unwrap().push(buffer.into());
         self.notify();
     }
 
@@ -213,7 +213,7 @@ impl<T: Any> Drop for Response<T> {
         debug!("drop response (streaming? {})", self.streaming);
         if self.streaming {
             // append an empty buffer to indicate there is no more data left, and notify handler
-            self.resp().append(&[]);
+            self.resp().append(vec![]);
         } else {
             self.resp().done();
         }
@@ -387,9 +387,10 @@ impl Response<Fresh> {
 
 impl Response<Streaming> {
     /// Appends the given content to this response's body.
-    pub fn append<D: AsRef<[u8]>>(&mut self, content: D) {
-        debug!("append {} bytes", content.as_ref().len());
-        self.resp().append(content);
+    pub fn append<D: Into<Vec<u8>>>(&mut self, content: D) {
+        let vec = content.into();
+        debug!("append {} bytes", vec.len());
+        self.resp().append(vec);
     }
 }
 

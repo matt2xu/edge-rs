@@ -26,6 +26,7 @@ impl Fetch {
             let mut res = res.stream();
             println!("url = {}", url);
             client.request(&url, move |buffer| {
+                println!("got {} bytes", buffer.len());
                 res.append(buffer);
                 thread::sleep(Duration::from_secs(1));
             });

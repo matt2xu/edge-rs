@@ -95,11 +95,11 @@ impl MyApp {
         thread::spawn(move || {
             thread::sleep(Duration::from_secs(1));
             let mut res = res.stream();
-            res.append(b"toto");
+            res.append("toto".as_bytes());
             thread::sleep(Duration::from_secs(1));
-            res.append(b"tata");
+            res.append("tata".as_bytes());
             thread::sleep(Duration::from_secs(1));
-            res.append(b"titi");
+            res.append("titi".as_bytes());
         });
     }
 
