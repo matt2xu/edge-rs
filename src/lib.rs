@@ -355,8 +355,10 @@ impl<T> Handler<HttpStream> for EdgeHandler<T> {
         // we can only get here if self.body = Some(...), or there is a bug
         {
             let body = self.body.as_mut().unwrap();
-            if let Some(next) = body.read(transport) {
-                return next;
+            if let Ok(done) = body.read(transport) {
+                if !done {
+                    return Next::read();
+                }
             }
         }
 
