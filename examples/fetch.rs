@@ -22,16 +22,13 @@ impl Fetch {
         thread::spawn(move || {
             thread::sleep(Duration::from_secs(1));
 
-            let client = Client::new();
-            client.request(&url);
-
-            println!("url = {}", url);
+            let mut client = Client::new();
             let mut res = res.stream();
-            res.append(b"toto");
-            thread::sleep(Duration::from_secs(1));
-            res.append(b"tata");
-            thread::sleep(Duration::from_secs(1));
-            res.append(b"titi");
+            println!("url = {}", url);
+            client.request(&url, move |buffer| {
+                res.append(buffer);
+                thread::sleep(Duration::from_secs(1));
+            });
         });
     }
 

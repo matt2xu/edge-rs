@@ -444,14 +444,20 @@ impl Client {
         }
     }
 
-    pub fn request<'a, I: AsRef<str>>(&self, url: I) {
-        let _ = self.inner.request(url.as_ref().parse().unwrap(), ClientHandler);
+    pub fn request<'a, F: 'static + FnMut(Buffer) + Send, I: AsRef<str>>(&mut self, url: I, callback: F) {
+        let _ = self.inner.request(url.as_ref().parse().unwrap(), ClientHandler {
+            callback: Box::new(callback)
+        });
     }
 }
 
 use std::io;
+use std::boxed::Box;
 
-struct ClientHandler;
+struct ClientHandler {
+    callback: Box<FnMut(Buffer) + Send>
+}
+
 impl hyper::client::Handler<HttpStream> for ClientHandler {
 
     fn on_request(&mut self, _req: &mut ClientRequest) -> Next {
@@ -474,6 +480,7 @@ impl hyper::client::Handler<HttpStream> for ClientHandler {
             Ok(0) => Next::end(),
             Ok(n) => {
                 println!("read {} bytes", n);
+                (self.callback)(Buffer::new());
                 Next::read()
             },
             Err(e) => match e.kind() {

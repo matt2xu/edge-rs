@@ -144,7 +144,7 @@ impl ResponseHolder {
 
     pub fn new_response(&mut self) -> Response {
         Response {
-            resp: &mut *self.resp as *mut Resp,
+            resp: RespPtr(&mut *self.resp),
             streaming: false,
             _marker: PhantomData
         }
@@ -184,6 +184,8 @@ impl ResponseHolder {
     }
 }
 
+struct RespPtr(*mut Resp);
+
 /// This represents the response that will be sent back to the application.
 ///
 /// Includes a status code (default 200 OK), headers, and a body.
@@ -192,13 +194,13 @@ impl ResponseHolder {
 ///
 /// The response is sent when it is dropped.
 pub struct Response<W: Any = Fresh> {
-    resp: *mut Resp,
+    resp: RespPtr,
     streaming: bool,
     _marker: PhantomData<W>
 }
 
 // no worries, the response is always modified by only one thread at a time
-unsafe impl Send for Response {}
+unsafe impl Send for RespPtr {}
 
 impl Drop for ResponseHolder {
     fn drop(&mut self) {
@@ -230,13 +232,13 @@ pub enum Streaming {}
 impl<W: Any> Response<W> {
     fn resp(&self) -> &Resp {
         unsafe {
-            &*self.resp
+            &*self.resp.0
         }
     }
 
     fn resp_mut(&self) -> &mut Resp {
         unsafe {
-            &mut *self.resp
+            &mut *self.resp.0
         }
     }
 }
@@ -376,7 +378,7 @@ impl Response<Fresh> {
     pub fn stream(self) -> Response<Streaming> {
         self.resp_mut().init_deque();
         Response {
-            resp: self.resp,
+            resp: RespPtr(self.resp.0),
             streaming: true,
             _marker: PhantomData
         }
