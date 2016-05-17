@@ -1,4 +1,4 @@
-use hyper::header::{CookiePair as Cookie, ContentLength, ContentType, Header, Location, SetCookie};
+use hyper::header::{self, CookiePair as Cookie, ContentType, Header, SetCookie};
 use hyper::status::StatusCode as Status;
 
 use hyper::{Control, Headers, Next};
@@ -134,7 +134,7 @@ pub struct ResponseHolder {
     resp: Box<Resp>
 }
 
-impl ResponseHolder {    
+impl ResponseHolder {
 
     pub fn new(control: Control) -> ResponseHolder {
         ResponseHolder {
@@ -202,13 +202,13 @@ unsafe impl Send for Response {}
 
 impl Drop for ResponseHolder {
     fn drop(&mut self) {
-        println!("drop response holder");
+        debug!("drop response holder");
     }
 }
 
 impl<T: Any> Drop for Response<T> {
     fn drop(&mut self) {
-        println!("drop response (streaming? {})", self.streaming);
+        debug!("drop response (streaming? {})", self.streaming);
         if self.streaming {
             // append an empty buffer to indicate there is no more data left, and notify handler
             self.resp().append(&[]);
@@ -220,7 +220,7 @@ impl<T: Any> Drop for Response<T> {
 
 impl Drop for Resp {
     fn drop(&mut self) {
-        println!("drop resp");
+        debug!("drop resp");
     }
 }
 
@@ -255,7 +255,7 @@ impl Response<Fresh> {
 
     /// Sets the Content-Length header.
     pub fn len(&mut self, len: u64) -> &mut Self {
-        self.header(ContentLength(len))
+        self.header(header::ContentLength(len))
     }
 
     /// Sets the given cookie.
@@ -282,7 +282,7 @@ impl Response<Fresh> {
 
     /// Sets the Location header.
     pub fn location<S: Into<String>>(&mut self, url: S) -> &mut Self {
-        self.header(Location(url.into()))
+        self.header(header::Location(url.into()))
     }
 
     /// Redirects to the given URL with the given status, or 302 Found if none is given.
@@ -371,6 +371,8 @@ impl Response<Fresh> {
     }
 
     /// Moves to streaming mode.
+    ///
+    /// If no Content-Length is set, use Transfer-Encoding: chunked
     pub fn stream(self) -> Response<Streaming> {
         self.resp_mut().init_deque();
         Response {
@@ -384,7 +386,7 @@ impl Response<Fresh> {
 impl Response<Streaming> {
     /// Appends the given content to this response's body.
     pub fn append<D: AsRef<[u8]>>(&mut self, content: D) {
-        println!("append {} bytes", content.as_ref().len());
+        debug!("append {} bytes", content.as_ref().len());
         self.resp().append(content);
     }
 }

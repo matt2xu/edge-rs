@@ -169,6 +169,9 @@ extern crate serde;
 extern crate serde_json;
 extern crate deque;
 
+#[macro_use]
+extern crate log;
+
 pub use hyper::header as header;
 pub use header::CookiePair as Cookie;
 pub use hyper::status::StatusCode as Status;
@@ -255,7 +258,7 @@ impl<T> Edge<T> {
     pub fn start(self) -> Result<()> {
         let server = Server::http(&self.addr).unwrap();
         let (listening, server) = server.handle(move |control| {
-            println!("creating new edge handler");
+            debug!("creating new edge handler");
 
             EdgeHandler {
                 router: self.router.clone(),
@@ -267,7 +270,7 @@ impl<T> Edge<T> {
             }
         }).unwrap();
 
-        println!("Listening on http://{}", listening);
+        info!("Listening on http://{}", listening);
         server.run();
         Ok(())
     }
@@ -285,7 +288,7 @@ pub struct EdgeHandler<T> {
 
 impl<T> Drop for EdgeHandler<T> {
     fn drop(&mut self) {
-        println!("dropping edge handler");
+        debug!("dropping edge handler");
     }
 }
 
@@ -296,7 +299,7 @@ impl<T> EdgeHandler<T> {
         if let Some(callback) = self.router.find_callback(req) {
             callback(&self.app, req, self.holder.new_response());
         } else {
-            println!("route not found for path {:?}", req.path());
+            warn!("route not found for path {:?}", req.path());
             let mut res = self.holder.new_response();
             res.status(Status::NotFound);
             res.content_type("text/plain");
@@ -304,11 +307,11 @@ impl<T> EdgeHandler<T> {
         }
 
         if self.holder.can_write() {
-            println!("response done, return Next::write after callback");
+            debug!("response done, return Next::write after callback");
             Next::write()
         } else {
             // otherwise we ask the Response to notify us, and wait
-            println!("response not done, return Next::wait after callback");
+            debug!("response not done, return Next::wait after callback");
             Next::wait()
         }
     }
@@ -317,7 +320,7 @@ impl<T> EdgeHandler<T> {
 /// Implements Handler for our EdgeHandler.
 impl<T> Handler<HttpStream> for EdgeHandler<T> {
     fn on_request(&mut self, req: HttpRequest) -> Next {
-        println!("on_request");
+        debug!("on_request");
 
         match request::new(&self.router.base_url, req) {
             Ok(req) => {
@@ -347,7 +350,7 @@ impl<T> Handler<HttpStream> for EdgeHandler<T> {
     }
 
     fn on_request_readable(&mut self, transport: &mut Decoder<HttpStream>) -> Next {
-        println!("on_request_readable");
+        debug!("on_request_readable");
 
         // we can only get here if self.body = Some(...), or there is a bug
         {
@@ -363,26 +366,26 @@ impl<T> Handler<HttpStream> for EdgeHandler<T> {
     }
 
     fn on_response(&mut self, res: &mut HttpResponse) -> Next {
-        println!("on_response");
+        debug!("on_response");
 
         // we got here from callback directly or Resp notified the Control
         res.set_status(self.holder.get_status());
         self.holder.set_headers(res.headers_mut());
 
         if !self.holder.body().is_empty() {
-            println!("has body");
+            debug!("has body");
             Next::write()
         } else if self.holder.is_streaming() {
-            println!("streaming mode, waiting");
+            debug!("streaming mode, waiting");
             Next::wait()
         } else {
-            println!("has no body, ending");
+            debug!("has no body, ending");
             Next::end()
         }
     }
 
     fn on_response_writable(&mut self, transport: &mut Encoder<HttpStream>) -> Next {
-        println!("on_response_writable");
+        debug!("on_response_writable");
 
         if self.holder.is_streaming() {
             if self.body.is_none() {
@@ -392,11 +395,11 @@ impl<T> Handler<HttpStream> for EdgeHandler<T> {
             if let Some(ref mut body) = self.body {
                 if body.is_empty() {
                     // done writing the buffer
-                    println!("done writing");
+                    debug!("done writing");
                     return Next::end();
                 } else {
                     // repeatedly write the body here with Next::write
-                    body.write(transport);
+                    let _ = body.write(transport);
                     if !body.is_empty() {
                         return Next::write();
                     }
@@ -411,13 +414,22 @@ impl<T> Handler<HttpStream> for EdgeHandler<T> {
             let body = self.holder.body();
             if body.is_empty() {
                 // done writing the buffer
-                println!("done writing");
+                debug!("done writing");
                 Next::end()
             } else {
                 // repeatedly write the body here with Next::write
                 body.write(transport)
             }
         }
+    }
+
+    fn on_error(&mut self, err: hyper::error::Error) -> Next {
+        debug!("on_error {:?}", err);
+        Next::remove()
+    }
+
+    fn on_remove(self, _transport: HttpStream) {
+        debug!("on_remove");
     }
 }
 

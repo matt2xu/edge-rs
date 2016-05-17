@@ -1,3 +1,6 @@
+extern crate env_logger;
+#[macro_use]
+extern crate log;
 extern crate edge;
 
 use edge::{Edge, Cookie, Request, Response, Status};
@@ -103,6 +106,8 @@ impl MyApp {
 }
 
 fn main() {
+    env_logger::init().unwrap();
+
     let app = MyApp::new();
     let mut cter = Edge::new("0.0.0.0:3000", app);
     cter.get("/", MyApp::home);
