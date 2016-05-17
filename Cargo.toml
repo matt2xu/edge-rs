@@ -17,8 +17,7 @@ serde_json = "0.7"
 
 [dependencies.hyper]
 git = "https://github.com/hyperium/hyper.git"
-branch = "mio"
-rev = "dd070f6e"
+rev = "ffb499b"
 default-features = false
 features = ["cookie"]
 

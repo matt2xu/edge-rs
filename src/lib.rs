@@ -201,13 +201,13 @@ use response::ResponseHolder;
 use router::Router;
 
 /// Structure for an Edge application.
-pub struct Edge<T: Send> {
+pub struct Edge<T> {
     addr: SocketAddr,
     inner: Arc<T>,
     router: Arc<Router<T>>
 }
 
-impl<T: 'static + Send + Sync> Edge<T> {
+impl<T> Edge<T> {
 
     /// Creates an Edge application using the given inner structure.
     pub fn new(addr: &str, inner: T) -> Edge<T> {
@@ -249,10 +249,12 @@ impl<T: 'static + Send + Sync> Edge<T> {
         router.insert(method, path.into(), callback)
     }
 
-    /// Starts a server.
+    /// Runs the server and never returns.
+    ///
+    /// This will block the current thread.
     pub fn start(self) -> Result<()> {
         let server = Server::http(&self.addr).unwrap();
-        server.handle(move |control| {
+        let (listening, server) = server.handle(move |control| {
             println!("creating new edge handler");
 
             EdgeHandler {
@@ -264,12 +266,15 @@ impl<T: 'static + Send + Sync> Edge<T> {
                 holder: ResponseHolder::new(control)
             }
         }).unwrap();
+
+        println!("Listening on http://{}", listening);
+        server.run();
         Ok(())
     }
 
 }
 
-pub struct EdgeHandler<T: Send> {
+pub struct EdgeHandler<T> {
     router: Arc<Router<T>>,
     app: Arc<T>,
 
@@ -278,13 +283,13 @@ pub struct EdgeHandler<T: Send> {
     holder: ResponseHolder
 }
 
-impl<T: Send> Drop for EdgeHandler<T> {
+impl<T> Drop for EdgeHandler<T> {
     fn drop(&mut self) {
         println!("dropping edge handler");
     }
 }
 
-impl<T: Send> EdgeHandler<T> {
+impl<T> EdgeHandler<T> {
     fn callback(&mut self) -> Next {
         let req = &mut self.request.as_mut().unwrap();
 
@@ -310,7 +315,7 @@ impl<T: Send> EdgeHandler<T> {
 }
 
 /// Implements Handler for our EdgeHandler.
-impl<T: Send> Handler<HttpStream> for EdgeHandler<T> {
+impl<T> Handler<HttpStream> for EdgeHandler<T> {
     fn on_request(&mut self, req: HttpRequest) -> Next {
         println!("on_request");
 
