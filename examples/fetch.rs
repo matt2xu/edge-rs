@@ -3,7 +3,7 @@ extern crate env_logger;
 extern crate log;
 extern crate edge;
 
-use edge::{Edge, Request, Response, Client};
+use edge::{Edge, Request, Response, Status, Client};
 use edge::value;
 
 use std::collections::BTreeMap;
@@ -30,14 +30,18 @@ impl Fetch {
             println!("url = {}", url);
 
             let buffer = client.request(&url);
-            println!("got {} bytes", buffer.len());
-            stream.append(buffer);
+            if client.status() == Status::Ok {
+                println!("got {} bytes", buffer.len());
+                stream.append(buffer);
+            }
 
             thread::sleep(Duration::from_secs(1));
 
             let buffer = client.request(&url);
-            println!("got {} bytes", buffer.len());
-            stream.append(buffer);
+            if client.status() == Status::Ok {
+                println!("got {} bytes", buffer.len());
+                stream.append(buffer);
+            }
         });
     }
 

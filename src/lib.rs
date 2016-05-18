@@ -436,35 +436,65 @@ impl<T> Handler<HttpStream> for EdgeHandler<T> {
 }
 
 pub struct Client {
-    inner: HttpClient<ClientHandler>
+    result: RequestResult
+}
+
+struct RequestResult {
+    body: Buffer,
+    response: Option<ClientResponse>
+}
+
+impl RequestResult {
+    fn new() -> RequestResult {
+        RequestResult {
+            body: Buffer::new(),
+            response: None
+        }
+    }
 }
 
 impl Client {
     pub fn new() -> Client {
         Client {
-            inner: HttpClient::new().unwrap()
+            result: RequestResult::new()
         }
     }
 
     pub fn request<'a, I: AsRef<str>>(&mut self, url: I) -> Vec<u8> {
         let (tx, rx) = mpsc::channel();
-        let _ = self.inner.request(url.as_ref().parse().unwrap(),
-            ClientHandler {
-                body: Buffer::new(),
-                tx: tx
-            });
-        rx.recv().unwrap()
+
+        let inner = HttpClient::new().unwrap();
+        let _ = inner.request(url.as_ref().parse().unwrap(), ClientHandler::new(tx, &mut self.result));
+        rx.recv().unwrap();
+        inner.close();
+
+        self.result.body.take()
+    }
+
+    pub fn status(&self) -> Status {
+        *self.result.response.as_ref().unwrap().status()
     }
 }
 
 struct ClientHandler {
-    body: Buffer,
-    tx: mpsc::Sender<Vec<u8>>
+    tx: mpsc::Sender<()>,
+    result: *mut RequestResult
+}
+
+unsafe impl Send for ClientHandler {}
+
+impl ClientHandler {
+    fn new(tx: mpsc::Sender<()>, result: &mut RequestResult) -> ClientHandler {
+        ClientHandler {
+            tx: tx,
+            result: result as *mut RequestResult
+        }
+    }
 }
 
 impl Drop for ClientHandler {
     fn drop(&mut self) {
-        let _ = self.tx.send(self.body.take());
+        let _ = self.tx.send(());
     }
 }
 
@@ -479,13 +509,14 @@ impl hyper::client::Handler<HttpStream> for ClientHandler {
     }
 
     fn on_response(&mut self, res: ClientResponse) -> Next {
-        println!("Response: {}", res.status());
-        println!("Headers:\n{}", res.headers());
+        let response = unsafe { &mut (*self.result).response };
+        *response = Some(res);
         Next::read()
     }
 
     fn on_response_readable(&mut self, decoder: &mut Decoder<HttpStream>) -> Next {
-        if let Ok(keep_reading) = self.body.read_from(decoder) {
+        let body = unsafe { &mut (*self.result).body };
+        if let Ok(keep_reading) = body.read_from(decoder) {
             if keep_reading {
                 return Next::read();
             }
