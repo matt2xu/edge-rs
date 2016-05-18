@@ -196,7 +196,7 @@ mod request;
 mod response;
 
 pub use request::Request;
-pub use response::Response;
+pub use response::{Response, Fresh, Streaming};
 pub use router::Callback;
 
 use buffer::Buffer;
