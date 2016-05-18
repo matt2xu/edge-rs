@@ -6,29 +6,32 @@ pub struct Buffer {
     content: Vec<u8>,
     pos: usize,
 
-    /// growable is either None when reading a fixed buffer (Content-Length known in advance)
-    /// or it is Some(size) where size is the current write size by which the buffer should be grown
-    /// every time it is full
-    growable: Option<usize>
+    /// growable is either:
+    ///   - false when reading a fixed buffer (Content-Length known in advance),
+    ///     in which case it is only allocated once.
+    ///   - true when using Transfer-Encoding: chunked, and the buffer grows dynamically
+    growable: bool
 }
 
-const DEFAULT_BUF_SIZE: usize = 8 * 1024;
+const DEFAULT_BUF_SIZE: usize = 4 * 1024;
 
 impl Buffer {
+    /// Creates a new growable buffer
     pub fn new() -> Buffer {
         Buffer {
             content: Vec::new(),
             pos: 0,
-            growable: Some(16)
+            growable: true
         }
     }
 
-    pub fn with_capacity(capacity: usize) -> Buffer {
-        debug!("creating buffer with capacity {}", capacity);
+    /// Creates a new fixed size buffer.
+    pub fn new_fixed(capacity: usize) -> Buffer {
+        debug!("creating fixed buffer with capacity {}", capacity);
         Buffer {
             content: vec![0; capacity],
             pos: 0,
-            growable: None
+            growable: false
         }
     }
 
@@ -41,38 +44,21 @@ impl Buffer {
     /// Read from the given reader into this buffer.
     ///
     /// Returns Ok(true) when done, Ok(false) otherwise, and Err if there is an error.
-    pub fn read<R: Read>(&mut self, reader: &mut R) -> Result<bool> {
-        match self.growable {
-            None => self.read_fixed(reader),
-            Some(_) => self.read_growable(reader)
-        }
-    }
-
-    fn read_fixed<R: Read>(&mut self, reader: &mut R) -> Result<bool> {
-        match reader.read(&mut self.content[self.pos..]) {
-            Ok(n) => {
-                self.pos += n;
-                Ok(self.pos == self.len())
-            }
-            Err(e) => match e.kind() {
-                ErrorKind::WouldBlock => Ok(false),
-                _ => Err(e)
-            }
-        }
-    }
-
-    fn read_growable<R: Read>(&mut self, reader: &mut R) -> Result<bool> {
-        let mut write_size = self.growable.unwrap_or(16);
+    pub fn read_from<R: Read>(&mut self, reader: &mut R) -> Result<bool> {
         loop {
-            let len = self.len();
-            if self.pos == len {
-                // if buffer is full, extend it
-                // reused Read::read_to_end algorithm
-                if write_size < DEFAULT_BUF_SIZE {
-                    write_size *= 2;
+            if self.growable {
+                let mut len = self.len();
+                if self.pos == len {
+                    // if buffer is full, extend it
+                    if len < DEFAULT_BUF_SIZE {
+                        len = DEFAULT_BUF_SIZE;
+                    } else {
+                        len *= 2;
+                    }
+
+                    self.content.resize(len, 0);
+                    debug!("buffer is full, grown to {}", self.len());
                 }
-                self.content.resize(len + write_size, 0);
-                debug!("buffer is full, growing to {}", self.len());
             }
 
             match reader.read(&mut self.content[self.pos..]) {
@@ -85,13 +71,15 @@ impl Buffer {
                 Ok(n) => {
                     // got n bytes, loop to determine if we need to read again
                     debug!("read {} bytes from transport", n);
-                    self.pos += n
+                    self.pos += n;
+                    if !self.growable && self.pos == self.len() {
+                        return Ok(true);
+                    }
                 }
                 Err(e) => {
                     return match e.kind() {
                         ErrorKind::WouldBlock => {
                             debug!("reading more would block");
-                            self.growable = Some(write_size);
                             Ok(false)
                         },
                         _ => {
@@ -144,7 +132,7 @@ impl From<Vec<u8>> for Buffer {
         Buffer {
             content: content,
             pos: 0,
-            growable: Some(16)
+            growable: true
         }
     }
 }

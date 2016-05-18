@@ -326,7 +326,7 @@ impl<T> Handler<HttpStream> for EdgeHandler<T> {
             Ok(req) => {
                 self.body = match *req.method() {
                     Put | Post => Some(match req.headers().get::<ContentLength>() {
-                        Some(&ContentLength(len)) => Buffer::with_capacity(len as usize),
+                        Some(&ContentLength(len)) => Buffer::new_fixed(len as usize),
                         None => Buffer::new()
                     }),
                     _ => None
@@ -355,7 +355,7 @@ impl<T> Handler<HttpStream> for EdgeHandler<T> {
         // we can only get here if self.body = Some(...), or there is a bug
         {
             let body = self.body.as_mut().unwrap();
-            if let Ok(done) = body.read(transport) {
+            if let Ok(done) = body.read_from(transport) {
                 if !done {
                     return Next::read();
                 }
