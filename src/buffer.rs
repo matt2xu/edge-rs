@@ -43,7 +43,8 @@ impl Buffer {
 
     /// Read from the given reader into this buffer.
     ///
-    /// Returns Ok(true) when done, Ok(false) otherwise, and Err if there is an error.
+    /// Returns Ok(true) when the handler needs to read from the transport,
+    /// Ok(false) when done, and Err if there is an error.
     pub fn read_from<R: Read>(&mut self, reader: &mut R) -> Result<bool> {
         loop {
             if self.growable {
@@ -66,21 +67,21 @@ impl Buffer {
                     // EOF, we truncate the buffer so it has the proper size
                     debug!("EOF, content is {} bytes", self.pos);
                     self.content.truncate(self.pos);
-                    return Ok(true);
+                    return Ok(false);
                 }
                 Ok(n) => {
                     // got n bytes, loop to determine if we need to read again
                     debug!("read {} bytes from transport", n);
                     self.pos += n;
                     if !self.growable && self.pos == self.len() {
-                        return Ok(true);
+                        return Ok(false);
                     }
                 }
                 Err(e) => {
                     return match e.kind() {
                         ErrorKind::WouldBlock => {
                             debug!("reading more would block");
-                            Ok(false)
+                            Ok(true)
                         },
                         _ => {
                             error!("error while reading: {}", e);
@@ -96,12 +97,18 @@ impl Buffer {
         self.content = content.into();
     }
 
-    /// writes from this buffer into the given writer
+    /// Takes the contents of this buffer out of it, and resets the current read/write position.
+    pub fn take(&mut self) -> Vec<u8> {
+        self.pos = 0;
+        ::std::mem::replace(&mut self.content, Vec::new())
+    }
+
+    /// Writes from this buffer into the given writer
     pub fn write<W: Write>(&mut self, writer: &mut W) -> Next {
         match writer.write(&self.content[self.pos..]) {
             Ok(0) => panic!("wrote 0 bytes"),
             Ok(n) => {
-                println!("wrote {} bytes", n);
+                debug!("wrote {} bytes", n);
                 self.pos += n;
                 if self.is_empty() {
                     // done reading
@@ -111,9 +118,12 @@ impl Buffer {
                 }
             }
             Err(e) => match e.kind() {
-                ErrorKind::WouldBlock => Next::write(),
+                ErrorKind::WouldBlock => {
+                    debug!("writing more would block");
+                    Next::write()
+                }
                 _ => {
-                    println!("write error {:?}", e);
+                    error!("write error {:?}", e);
                     Next::end()
                 }
             }

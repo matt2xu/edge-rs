@@ -1,9 +1,12 @@
+extern crate env_logger;
+#[macro_use]
+extern crate log;
 extern crate edge;
 
 use edge::{Edge, Request, Response, Client};
+use edge::value;
 
 use std::collections::BTreeMap;
-use edge::value;
 
 struct Fetch;
 impl Fetch {
@@ -23,19 +26,26 @@ impl Fetch {
             thread::sleep(Duration::from_secs(1));
 
             let mut client = Client::new();
-            let mut res = res.stream();
+            let mut stream = res.stream();
             println!("url = {}", url);
-            client.request(&url, move |buffer| {
-                println!("got {} bytes", buffer.len());
-                res.append(buffer);
-                thread::sleep(Duration::from_secs(1));
-            });
+
+            let buffer = client.request(&url);
+            println!("got {} bytes", buffer.len());
+            stream.append(buffer);
+
+            thread::sleep(Duration::from_secs(1));
+
+            let buffer = client.request(&url);
+            println!("got {} bytes", buffer.len());
+            stream.append(buffer);
         });
     }
 
 }
 
 fn main() {
+    env_logger::init().unwrap();
+
     let mut cter = Edge::new("0.0.0.0:3000", Fetch);
     cter.get("/", Fetch::home);
     cter.get("/fetch", Fetch::fetch);

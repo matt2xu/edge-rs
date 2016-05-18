@@ -188,7 +188,7 @@ use hyper::server::{Handler, Server, Request as HttpRequest, Response as HttpRes
 
 use std::io::{Read, Result, Write};
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 
 mod buffer;
 mod router;
@@ -355,8 +355,8 @@ impl<T> Handler<HttpStream> for EdgeHandler<T> {
         // we can only get here if self.body = Some(...), or there is a bug
         {
             let body = self.body.as_mut().unwrap();
-            if let Ok(done) = body.read_from(transport) {
-                if !done {
+            if let Ok(keep_reading) = body.read_from(transport) {
+                if keep_reading {
                     return Next::read();
                 }
             }
@@ -446,18 +446,26 @@ impl Client {
         }
     }
 
-    pub fn request<'a, F: 'static + FnMut(Vec<u8>) + Send, I: AsRef<str>>(&mut self, url: I, callback: F) {
-        let _ = self.inner.request(url.as_ref().parse().unwrap(), ClientHandler {
-            callback: Box::new(callback)
-        });
+    pub fn request<'a, I: AsRef<str>>(&mut self, url: I) -> Vec<u8> {
+        let (tx, rx) = mpsc::channel();
+        let _ = self.inner.request(url.as_ref().parse().unwrap(),
+            ClientHandler {
+                body: Buffer::new(),
+                tx: tx
+            });
+        rx.recv().unwrap()
     }
 }
 
-use std::io;
-use std::boxed::Box;
-
 struct ClientHandler {
-    callback: Box<FnMut(Vec<u8>) + Send>
+    body: Buffer,
+    tx: mpsc::Sender<Vec<u8>>
+}
+
+impl Drop for ClientHandler {
+    fn drop(&mut self) {
+        let _ = self.tx.send(self.body.take());
+    }
 }
 
 impl hyper::client::Handler<HttpStream> for ClientHandler {
@@ -477,22 +485,13 @@ impl hyper::client::Handler<HttpStream> for ClientHandler {
     }
 
     fn on_response_readable(&mut self, decoder: &mut Decoder<HttpStream>) -> Next {
-        let mut buf = vec![0; 65536];
-        match decoder.read(&mut buf[..]) {
-            Ok(0) => Next::end(),
-            Ok(n) => {
-                println!("read {} bytes", n);
-                (self.callback)(Vec::new());
-                Next::read()
-            },
-            Err(e) => match e.kind() {
-                io::ErrorKind::WouldBlock => Next::read(),
-                _ => {
-                    println!("ERROR: {}", e);
-                    Next::end()
-                }
+        if let Ok(keep_reading) = self.body.read_from(decoder) {
+            if keep_reading {
+                return Next::read();
             }
         }
+
+        Next::end()
     }
 
     fn on_error(&mut self, err: hyper::Error) -> Next {
