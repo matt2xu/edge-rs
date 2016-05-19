@@ -330,7 +330,11 @@ impl Response<Fresh> {
 
     /// Sends the given file, setting the Content-Type based on the file's extension.
     ///
-    /// Known extensions are htm, html, jpg, jpeg, png, js, css.
+    /// Known extensions are:
+    ///   - application: js, m3u8, mpd, xml
+    ///   - image: gif, jpg, jpeg, png
+    ///   - text: css, htm, html, txt
+    ///   - video: avi, mp4, mpg, mpeg, ts
     /// If the file does not exist, this method sends a 404 Not Found response.
     pub fn send_file<P: AsRef<Path>>(mut self, path: P) {
         let need_content_type = !self.resp().has_header::<ContentType>();
@@ -338,16 +342,38 @@ impl Response<Fresh> {
             let extension = path.as_ref().extension();
             if let Some(ext) = extension {
                 let content_type = match ext.to_string_lossy().as_ref() {
-                    "htm" | "html" => Some(ContentType::html()),
-                    "jpg" | "jpeg" => Some(ContentType::jpeg()),
-                    "png" => Some(ContentType::png()),
-                    "js" => Some(ContentType(Mime(TopLevel::Text, SubLevel::Javascript, vec![(Attr::Charset, Value::Utf8)]))),
-                    "css" => Some(ContentType(Mime(TopLevel::Text, SubLevel::Css, vec![(Attr::Charset, Value::Utf8)]))),
+                    // application
+                    "js" => Some(("application", "javascript", None)),
+                    "m3u8" => Some(("application", "vnd.apple.mpegurl", None)),
+                    "mpd" => Some(("application", "dash+xml", None)),
+                    "xml" => Some(("application", "xml", None)),
+
+                    // image
+                    "gif" => Some(("image", "gif", None)),
+                    "jpg" | "jpeg" => Some(("image", "jpeg", None)),
+                    "png" => Some(("image", "png", None)),
+
+                    // text
+                    "css" => Some(("text", "css", None)),
+                    "htm" | "html" => Some(("text", "html", Some((Attr::Charset, Value::Utf8)))),
+                    "txt" => Some(("text", "plain", Some((Attr::Charset, Value::Utf8)))),
+
+                    // video
+                    "avi" => Some(("video", "x-msvideo", None)),
+                    "mp4" => Some(("video", "mp4", None)),
+                    "mpg" | "mpeg" => Some(("video", "mpeg", None)),
+                    "ts" => Some(("video", "mp2t", None)),
                     _ => None
                 };
 
-                if let Some(content_type) = content_type {
-                    self.resp_mut().header(content_type);
+                if let Some((top, sub, attr)) = content_type {
+                    self.resp_mut().header(ContentType(Mime(TopLevel::Ext(top.to_string()),
+                        SubLevel::Ext(sub.to_string()),
+                        match attr {
+                            None => vec![],
+                            Some(val) => vec![val]
+                        }
+                    )));
                 }
             }
         }
