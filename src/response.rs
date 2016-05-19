@@ -19,7 +19,8 @@ use std::marker::PhantomData;
 use std::fs::{File, read_dir};
 use std::path::Path;
 
-use std::boxed::Box;
+use std::cell::UnsafeCell;
+use std::sync::{Arc};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use buffer::Buffer;
@@ -82,7 +83,9 @@ impl Resp {
     /// notify handler we have something to write
     /// called by done and append
     fn notify(&self) {
-        self.ctrl.ready(Next::write()).unwrap();
+        if let Err(e) = self.ctrl.ready(Next::write()) {
+            error!("could not notify handler: {}", e);
+        }
     }
 
     fn is_streaming(&self) -> bool {
@@ -131,43 +134,47 @@ impl Resp {
 
 /// This holds data for the response.
 pub struct ResponseHolder {
-    resp: Box<Resp>
+    resp: Arc<UnsafeCell<Resp>>
 }
 
 impl ResponseHolder {
 
     pub fn new(control: Control) -> ResponseHolder {
         ResponseHolder {
-            resp: Box::new(Resp::new(control))
+            resp: Arc::new(UnsafeCell::new(Resp::new(control)))
         }
     }
 
     pub fn new_response(&mut self) -> Response {
         Response {
-            resp: RespPtr(&mut *self.resp),
+            resp: self.resp.clone(),
             streaming: false,
             _marker: PhantomData
         }
     }
 
+    fn resp(&self) -> &Resp {
+        unsafe { &*self.resp.get() }
+    }
+
     pub fn get_status(&self) -> Status {
-        self.resp.status
+        self.resp().status
     }
 
     pub fn set_headers(&self, headers: &mut Headers) {
-        *headers = self.resp.headers.clone();
+        *headers = self.resp().headers.clone();
     }
 
     pub fn is_streaming(&self) -> bool {
-        self.resp.is_streaming()
+        self.resp().is_streaming()
     }
 
     pub fn body(&mut self) -> &mut Buffer {
-        &mut self.resp.body
+        unsafe { &mut (*self.resp.get()).body }
     }
 
     pub fn pop(&mut self) -> Option<Buffer> {
-        match self.resp.stealer.as_ref().unwrap().steal() {
+        match self.resp().stealer.as_ref().unwrap().steal() {
             deque::Data(buffer) => Some(buffer),
             deque::Empty => None,
             deque::Abort => panic!("abort")
@@ -180,11 +187,9 @@ impl ResponseHolder {
     ///   - can_write before done: response not done yet, can_write is called first,
     ///     sets ended_or_notify to true so that when done is called, it will notify the handler
     pub fn can_write(&self) -> bool {
-        self.resp.can_write()
+        self.resp().can_write()
     }
 }
-
-struct RespPtr(*mut Resp);
 
 /// This represents the response that will be sent back to the application.
 ///
@@ -194,19 +199,13 @@ struct RespPtr(*mut Resp);
 ///
 /// The response is sent when it is dropped.
 pub struct Response<W: Any = Fresh> {
-    resp: RespPtr,
+    resp: Arc<UnsafeCell<Resp>>,
     streaming: bool,
     _marker: PhantomData<W>
 }
 
 // no worries, the response is always modified by only one thread at a time
-unsafe impl Send for RespPtr {}
-
-impl Drop for ResponseHolder {
-    fn drop(&mut self) {
-        debug!("drop response holder");
-    }
-}
+unsafe impl Send for Response {}
 
 impl<T: Any> Drop for Response<T> {
     fn drop(&mut self) {
@@ -220,25 +219,19 @@ impl<T: Any> Drop for Response<T> {
     }
 }
 
-impl Drop for Resp {
-    fn drop(&mut self) {
-        debug!("drop resp");
-    }
-}
-
 pub enum Fresh {}
 pub enum Streaming {}
 
 impl<W: Any> Response<W> {
     fn resp(&self) -> &Resp {
         unsafe {
-            &*self.resp.0
+            &*self.resp.get()
         }
     }
 
     fn resp_mut(&self) -> &mut Resp {
         unsafe {
-            &mut *self.resp.0
+            &mut *self.resp.get()
         }
     }
 }
@@ -404,7 +397,7 @@ impl Response<Fresh> {
     pub fn stream(self) -> Response<Streaming> {
         self.resp_mut().init_deque();
         Response {
-            resp: RespPtr(self.resp.0),
+            resp: self.resp.clone(),
             streaming: true,
             _marker: PhantomData
         }
