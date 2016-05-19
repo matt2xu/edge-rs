@@ -1,4 +1,3 @@
-use hyper::Next;
 use std::io::{ErrorKind, Result, Read, Write};
 
 #[derive(Debug)]
@@ -104,27 +103,34 @@ impl Buffer {
     }
 
     /// Writes from this buffer into the given writer
-    pub fn write<W: Write>(&mut self, writer: &mut W) -> Next {
-        match writer.write(&self.content[self.pos..]) {
-            Ok(0) => panic!("wrote 0 bytes"),
-            Ok(n) => {
-                debug!("wrote {} bytes", n);
-                self.pos += n;
-                if self.is_empty() {
-                    // done reading
-                    Next::end()
-                } else {
-                    Next::write()
+    pub fn write_to<W: Write>(&mut self, writer: &mut W) -> Result<bool> {
+        if self.pos == self.len() {
+            debug!("EOF, wrote a total of {} bytes", self.pos);
+            return Ok(false);
+        }
+
+        loop {
+            match writer.write(&self.content[self.pos..]) {
+                Ok(0) => panic!("wrote 0 bytes"),
+                Ok(n) => {
+                    debug!("wrote {} bytes", n);
+                    self.pos += n;
+                    if self.pos == self.len() {
+                        // done reading
+                        return Ok(false);
+                    }
                 }
-            }
-            Err(e) => match e.kind() {
-                ErrorKind::WouldBlock => {
-                    debug!("writing more would block");
-                    Next::write()
-                }
-                _ => {
-                    error!("write error {:?}", e);
-                    Next::end()
+                Err(e) => {
+                    return match e.kind() {
+                        ErrorKind::WouldBlock => {
+                            debug!("writing more would block");
+                            Ok(true)
+                        }
+                        _ => {
+                            error!("error while writing: {}", e);
+                            Err(e)
+                        }
+                    };
                 }
             }
         }

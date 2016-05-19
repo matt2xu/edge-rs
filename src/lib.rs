@@ -266,7 +266,7 @@ impl<T> Edge<T> {
                 app: self.inner.clone(),
 
                 request: None,
-                body: None,
+                buffer: None,
                 holder: ResponseHolder::new(control)
             }
         }).unwrap();
@@ -283,7 +283,7 @@ pub struct EdgeHandler<T> {
     app: Arc<T>,
 
     request: Option<Request>,
-    body: Option<Buffer>,
+    buffer: Option<Buffer>,
     holder: ResponseHolder
 }
 
@@ -318,6 +318,21 @@ impl<T> EdgeHandler<T> {
     }
 }
 
+/// Returns true if need to read
+fn get_buffer(buffer: &mut Option<Buffer>, headers: &hyper::Headers) -> bool {
+    match headers.get::<ContentLength>() {
+        None => { // Transfer-Encoding: chunked
+            *buffer = Some(Buffer::new());
+            true
+        }
+        Some(&ContentLength(len)) if len != 0 => {
+            *buffer = Some(Buffer::new_fixed(len as usize));
+            true
+        }
+        _ => false
+    }
+}
+
 /// Implements Handler for our EdgeHandler.
 impl<T> Handler<HttpStream> for EdgeHandler<T> {
     fn on_request(&mut self, req: HttpRequest) -> Next {
@@ -325,16 +340,9 @@ impl<T> Handler<HttpStream> for EdgeHandler<T> {
 
         match request::new(&self.router.base_url, req) {
             Ok(req) => {
-                self.body = match *req.method() {
-                    Put | Post => Some(match req.headers().get::<ContentLength>() {
-                        Some(&ContentLength(len)) => Buffer::new_fixed(len as usize),
-                        None => Buffer::new()
-                    }),
-                    _ => None
-                };
-
+                let need_buffer = match *req.method() { Put|Post => true, _ => false};
                 self.request = Some(req);
-                if self.body.is_some() {
+                if need_buffer && get_buffer(&mut self.buffer, self.request.as_ref().unwrap().headers()) {
                     Next::read()
                 } else {
                     self.callback()
@@ -353,9 +361,9 @@ impl<T> Handler<HttpStream> for EdgeHandler<T> {
     fn on_request_readable(&mut self, transport: &mut Decoder<HttpStream>) -> Next {
         debug!("on_request_readable");
 
-        // we can only get here if self.body = Some(...), or there is a bug
+        // we can only get here if self.buffer = Some(...), or there is a bug
         {
-            let body = self.body.as_mut().unwrap();
+            let body = self.buffer.as_mut().unwrap();
             if let Ok(keep_reading) = body.read_from(transport) {
                 if keep_reading {
                     return Next::read();
@@ -364,7 +372,7 @@ impl<T> Handler<HttpStream> for EdgeHandler<T> {
         }
 
         // move body to the request
-        request::set_body(self.request.as_mut(), self.body.take());
+        request::set_body(self.request.as_mut(), self.buffer.take());
         self.callback()
     }
 
@@ -391,37 +399,43 @@ impl<T> Handler<HttpStream> for EdgeHandler<T> {
         debug!("on_response_writable");
 
         if self.holder.is_streaming() {
-            if self.body.is_none() {
-                self.body = self.holder.pop();
+            if self.buffer.is_none() {
+                self.buffer = self.holder.pop();
             }
 
-            if let Some(ref mut body) = self.body {
-                if body.is_empty() {
-                    // done writing the buffer
+            if self.buffer.is_none() {
+                // no buffer available yet
+                Next::wait()
+            } else {
+                let empty = self.buffer.as_mut().unwrap().is_empty();
+                if empty {
+                    // an empty body means no more data to write
                     debug!("done writing");
-                    return Next::end();
+                    Next::end()
                 } else {
-                    // repeatedly write the body here with Next::write
-                    let _ = body.write(transport);
-                    if !body.is_empty() {
-                        return Next::write();
+                    let result = self.buffer.as_mut().unwrap().write_to(transport);
+                    if let Ok(keep_writing) = result {
+                        if keep_writing {
+                            Next::write()
+                        } else {
+                            // done writing this buffer, try to get another one
+                            self.buffer = None;
+                            Next::write()
+                        }
+                    } else {
+                        Next::remove()
                     }
                 }
-            } else {
-                return Next::wait();
             }
-
-            self.body = None;
-            Next::write()
         } else {
-            let body = self.holder.body();
-            if body.is_empty() {
-                // done writing the buffer
-                debug!("done writing");
-                Next::end()
+            if let Ok(keep_writing) = self.holder.body().write_to(transport) {
+                if keep_writing {
+                    Next::write()
+                } else {
+                    Next::end()
+                }
             } else {
-                // repeatedly write the body here with Next::write
-                body.write(transport)
+                Next::remove()
             }
         }
     }
@@ -480,6 +494,7 @@ impl Client {
 
 struct ClientHandler {
     thread: Thread,
+    buffer: Option<Buffer>,
     result: *mut RequestResult
 }
 
@@ -489,6 +504,7 @@ impl ClientHandler {
     fn new(result: &mut RequestResult) -> ClientHandler {
         ClientHandler {
             thread: thread::current(),
+            buffer: None,
             result: result as *mut RequestResult
         }
     }
@@ -496,6 +512,9 @@ impl ClientHandler {
 
 impl Drop for ClientHandler {
     fn drop(&mut self) {
+        if let Some(buffer) = self.buffer.take() {
+            unsafe { (*self.result).body = buffer; }
+        }
         self.thread.unpark();
     }
 }
@@ -513,14 +532,19 @@ impl hyper::client::Handler<HttpStream> for ClientHandler {
     fn on_response(&mut self, res: ClientResponse) -> Next {
         let response = unsafe { &mut (*self.result).response };
         *response = Some(res);
-        Next::read()
+        if get_buffer(&mut self.buffer, response.as_ref().unwrap().headers()) {
+            Next::read()
+        } else {
+            Next::end()
+        }
     }
 
     fn on_response_readable(&mut self, decoder: &mut Decoder<HttpStream>) -> Next {
-        let body = unsafe { &mut (*self.result).body };
-        if let Ok(keep_reading) = body.read_from(decoder) {
-            if keep_reading {
-                return Next::read();
+        if let Some(ref mut buffer) = self.buffer {
+            if let Ok(keep_reading) = buffer.read_from(decoder) {
+                if keep_reading {
+                    return Next::read();
+                }
             }
         }
 
