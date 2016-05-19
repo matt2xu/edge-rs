@@ -293,6 +293,12 @@ impl<T> Drop for EdgeHandler<T> {
     }
 }
 
+fn set_capacity(buffer: &mut Buffer, headers: &hyper::Headers) {
+    if let Some(&ContentLength(len)) = headers.get::<ContentLength>() {
+        buffer.set_capacity(len as usize);
+    }
+}
+
 impl<T> EdgeHandler<T> {
     fn callback(&mut self) -> Next {
         let req = &mut self.request.as_mut().unwrap();
@@ -318,21 +324,6 @@ impl<T> EdgeHandler<T> {
     }
 }
 
-/// Returns true if need to read
-fn get_buffer(buffer: &mut Option<Buffer>, headers: &hyper::Headers) -> bool {
-    match headers.get::<ContentLength>() {
-        None => { // Transfer-Encoding: chunked
-            *buffer = Some(Buffer::new());
-            true
-        }
-        Some(&ContentLength(len)) if len != 0 => {
-            *buffer = Some(Buffer::new_fixed(len as usize));
-            true
-        }
-        _ => false
-    }
-}
-
 /// Implements Handler for our EdgeHandler.
 impl<T> Handler<HttpStream> for EdgeHandler<T> {
     fn on_request(&mut self, req: HttpRequest) -> Next {
@@ -340,13 +331,12 @@ impl<T> Handler<HttpStream> for EdgeHandler<T> {
 
         match request::new(&self.router.base_url, req) {
             Ok(req) => {
-                let need_buffer = match *req.method() { Put|Post => true, _ => false};
+                let mut buffer = Buffer::new();
+                set_capacity(&mut buffer, &req.headers());
+
+                self.buffer = Some(buffer);
                 self.request = Some(req);
-                if need_buffer && get_buffer(&mut self.buffer, self.request.as_ref().unwrap().headers()) {
-                    Next::read()
-                } else {
-                    self.callback()
-                }
+                Next::read()
             },
             Err(error) => {
                 let mut res = self.holder.new_response();
@@ -380,8 +370,25 @@ impl<T> Handler<HttpStream> for EdgeHandler<T> {
         debug!("on_response");
 
         // we got here from callback directly or Resp notified the Control
-        res.set_status(self.holder.get_status());
+        let status = self.holder.get_status();
+
+        // set status and headers
+        res.set_status(status);
         self.holder.set_headers(res.headers_mut());
+
+        // 4.4 Message Length
+        //
+        // 1.Any response message which "MUST NOT" include a message-body (such
+        // as the 1xx, 204, and 304 responses and any response to a HEAD
+        // request) is always terminated by the first empty line after the
+        // header fields, regardless of the entity-header fields present in
+        // the message.
+        //
+        if status.is_informational() ||
+            status == Status::NoContent || status == Status::NotModified ||
+            *self.request.as_ref().unwrap().method() == Head {
+            return Next::end();
+        }
 
         if !self.holder.body().is_empty() {
             debug!("has body");
@@ -455,14 +462,14 @@ pub struct Client {
 }
 
 struct RequestResult {
-    body: Buffer,
+    body: Option<Vec<u8>>,
     response: Option<ClientResponse>
 }
 
 impl RequestResult {
     fn new() -> RequestResult {
         RequestResult {
-            body: Buffer::new(),
+            body: None,
             response: None
         }
     }
@@ -484,7 +491,12 @@ impl Client {
 
         // close client and returns request body
         client.close();
-        self.result.body.take()
+
+        if let Some(buffer) = self.result.body.take() {
+            buffer
+        } else {
+            Vec::new()
+        }
     }
 
     pub fn status(&self) -> Status {
@@ -494,7 +506,7 @@ impl Client {
 
 struct ClientHandler {
     thread: Thread,
-    buffer: Option<Buffer>,
+    buffer: Buffer,
     result: *mut RequestResult
 }
 
@@ -504,7 +516,7 @@ impl ClientHandler {
     fn new(result: &mut RequestResult) -> ClientHandler {
         ClientHandler {
             thread: thread::current(),
-            buffer: None,
+            buffer: Buffer::new(),
             result: result as *mut RequestResult
         }
     }
@@ -512,9 +524,9 @@ impl ClientHandler {
 
 impl Drop for ClientHandler {
     fn drop(&mut self) {
-        if let Some(buffer) = self.buffer.take() {
-            unsafe { (*self.result).body = buffer; }
-        }
+        unsafe { (*self.result).body = Some(self.buffer.take()); }
+
+        // unlocks waiting thread
         self.thread.unpark();
     }
 }
@@ -530,21 +542,16 @@ impl hyper::client::Handler<HttpStream> for ClientHandler {
     }
 
     fn on_response(&mut self, res: ClientResponse) -> Next {
-        let response = unsafe { &mut (*self.result).response };
-        *response = Some(res);
-        if get_buffer(&mut self.buffer, response.as_ref().unwrap().headers()) {
-            Next::read()
-        } else {
-            Next::end()
-        }
+        set_capacity(&mut self.buffer, &res.headers());
+        unsafe { (*self.result).response = Some(res); }
+
+        Next::read()
     }
 
     fn on_response_readable(&mut self, decoder: &mut Decoder<HttpStream>) -> Next {
-        if let Some(ref mut buffer) = self.buffer {
-            if let Ok(keep_reading) = buffer.read_from(decoder) {
-                if keep_reading {
-                    return Next::read();
-                }
+        if let Ok(keep_reading) = self.buffer.read_from(decoder) {
+            if keep_reading {
+                return Next::read();
             }
         }
 
@@ -555,4 +562,5 @@ impl hyper::client::Handler<HttpStream> for ClientHandler {
         println!("ERROR: {}", err);
         Next::remove()
     }
+
 }
