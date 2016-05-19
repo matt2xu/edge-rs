@@ -188,7 +188,8 @@ use hyper::server::{Handler, Server, Request as HttpRequest, Response as HttpRes
 
 use std::io::{Read, Result, Write};
 use std::net::SocketAddr;
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc};
+use std::thread::{self, Thread};
 
 mod buffer;
 mod router;
@@ -460,14 +461,15 @@ impl Client {
         }
     }
 
-    pub fn request<'a, I: AsRef<str>>(&mut self, url: I) -> Vec<u8> {
-        let (tx, rx) = mpsc::channel();
+    pub fn request(&mut self, url: &str) -> Vec<u8> {
+        let client = HttpClient::new().unwrap();
+        let _ = client.request(url.parse().unwrap(), ClientHandler::new(&mut self.result));
 
-        let inner = HttpClient::new().unwrap();
-        let _ = inner.request(url.as_ref().parse().unwrap(), ClientHandler::new(tx, &mut self.result));
-        rx.recv().unwrap();
-        inner.close();
+        // wait for request to complete
+        thread::park();
 
+        // close client and returns request body
+        client.close();
         self.result.body.take()
     }
 
@@ -477,16 +479,16 @@ impl Client {
 }
 
 struct ClientHandler {
-    tx: mpsc::Sender<()>,
+    thread: Thread,
     result: *mut RequestResult
 }
 
 unsafe impl Send for ClientHandler {}
 
 impl ClientHandler {
-    fn new(tx: mpsc::Sender<()>, result: &mut RequestResult) -> ClientHandler {
+    fn new(result: &mut RequestResult) -> ClientHandler {
         ClientHandler {
-            tx: tx,
+            thread: thread::current(),
             result: result as *mut RequestResult
         }
     }
@@ -494,7 +496,7 @@ impl ClientHandler {
 
 impl Drop for ClientHandler {
     fn drop(&mut self) {
-        let _ = self.tx.send(());
+        self.thread.unpark();
     }
 }
 
