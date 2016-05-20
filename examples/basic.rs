@@ -29,8 +29,7 @@ impl MyApp {
 
         println!("in home, count = {}, path = {}", cnt, self.tmpl_path);
 
-        // set length manually because we're streaming
-        res.status(Status::Ok).len(80).content_type("text/html").header(AccessControlAllowOrigin::Any);
+        res.content_type("text/html; charset=UTF-8").header(AccessControlAllowOrigin::Any);
         res.send("<html><head><title>home</title></head><body><h1>Hello, world!</h1></body></html>")
     }
 
@@ -42,7 +41,7 @@ impl MyApp {
         data.insert("first_name", value::to_value(first_name));
         data.insert("last_name", value::to_value(last_name));
 
-        res.content_type("text/plain");
+        res.content_type("text/plain; charset=UTF-8");
         res.render("views/hello.hbs", data)
     }
 
@@ -53,7 +52,7 @@ impl MyApp {
 
         //res.render(self.tmpl_path + "/sample.tpl", data)
 
-        res.content_type("text/html");
+        res.content_type("text/html; charset=UTF-8");
         res.send("<html><head><title>Settings</title></head><body><h1>Settings</h1></body></html>")
     }
 
@@ -93,12 +92,13 @@ impl MyApp {
         use std::time::Duration;
 
         thread::spawn(move || {
-            thread::sleep(Duration::from_secs(1));
             let mut res = res.stream();
             res.append("toto".as_bytes());
             thread::sleep(Duration::from_secs(1));
+
             res.append("tata".as_bytes());
             thread::sleep(Duration::from_secs(1));
+
             res.append("titi".as_bytes());
         });
     }
