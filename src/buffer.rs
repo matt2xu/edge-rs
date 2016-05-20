@@ -134,7 +134,9 @@ impl Buffer {
 
         loop {
             match writer.write(&self.content[self.pos..]) {
-                Ok(0) => panic!("wrote 0 bytes"),
+                Ok(0) => {
+                    return Err(Error::new(ErrorKind::WriteZero, "could not write to the transport"));
+                }
                 Ok(n) => {
                     debug!("wrote {} bytes", n);
                     self.pos += n;
