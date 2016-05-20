@@ -1,28 +1,42 @@
-use std::io::{ErrorKind, Result, Read, Write};
+use std::io::{Error, ErrorKind, Result, Read, Write};
 
 #[derive(Debug)]
 pub struct Buffer {
     content: Vec<u8>,
-    pos: usize
+    pos: usize,
+
+    /// growable is either:
+    ///   - false when reading a fixed buffer (Content-Length known in advance),
+    ///     in which case it is only allocated once.
+    ///   - true when using Transfer-Encoding: chunked, and the buffer grows dynamically
+    growable: bool
 }
 
 const DEFAULT_BUF_SIZE: usize = 4 * 1024;
 
 impl Buffer {
-    /// Creates a new buffer
+    /// Creates a new growable buffer
     pub fn new() -> Buffer {
         Buffer {
             content: Vec::new(),
-            pos: 0
+            pos: 0,
+            growable: true
+        }
+    }
+
+    /// Creates a new fixed size buffer.
+    pub fn new_fixed(capacity: usize) -> Buffer {
+        debug!("creating fixed buffer with capacity {}", capacity);
+        Buffer {
+            content: vec![0; capacity],
+            pos: 0,
+            growable: false
         }
     }
 
     /// Updates the capacity of this buffer.
     pub fn set_capacity(&mut self, capacity: usize) {
-        // increases the capacity to avoid an unnecessary allocation
-        // really + 1 would be enough
-        // but it feels better to align to the next multiple of 8 instead :-)
-        self.content.resize(((capacity >> 3) + 1) << 3, 0);
+        self.content.resize(capacity, 0);
     }
 
     /// used when writing to check whether the buffer still has data
@@ -37,30 +51,53 @@ impl Buffer {
     /// Ok(false) when done, and Err if there is an error.
     pub fn read_from<R: Read>(&mut self, reader: &mut R) -> Result<bool> {
         loop {
-            let mut len = self.len();
-            if self.pos == len {
-                // if buffer is full, extend it
-                if len < DEFAULT_BUF_SIZE {
-                    len = DEFAULT_BUF_SIZE;
-                } else {
-                    len *= 2;
-                }
+            if self.growable {
+                let mut len = self.len();
+                if self.pos == len {
+                    // if buffer is full, extend it
+                    if len < DEFAULT_BUF_SIZE {
+                        len = DEFAULT_BUF_SIZE;
+                    } else {
+                        len *= 2;
+                    }
 
-                self.content.resize(len, 0);
-                debug!("buffer is full, grown to {}", self.len());
+                    self.content.resize(len, 0);
+                    debug!("buffer is full, grown to {}", self.len());
+                }
             }
 
             match reader.read(&mut self.content[self.pos..]) {
                 Ok(0) => {
-                    // EOF, we truncate the buffer so it has the proper size
-                    debug!("EOF, content is {} bytes", self.pos);
-                    self.content.truncate(self.pos);
+                    if self.growable {
+                        // EOF, we truncate the buffer so it has the proper size
+                        debug!("EOF, content is {} bytes", self.pos);
+                        self.content.truncate(self.pos);
+                    } else {
+                        // RFC 7230 Hypertext Transfer Protocol (HTTP/1.1): Message Syntax and Routing
+                        // 3.3.3 Message Body Length
+                        // http://httpwg.org/specs/rfc7230.html#message.body.length
+                        //
+                        // 5. If a valid Content-Length header field is present without Transfer-Encoding,
+                        // its decimal value defines the expected message body length in octets.
+                        // If the sender closes the connection or the recipient times out before the
+                        // indicated number of octets are received, the recipient MUST consider the message
+                        // to be incomplete and close the connection.
+                        if self.pos != self.len() {
+                            let message = format!("Incomplete message: expected {} bytes, got {}", self.len(), self.pos);
+                            error!("error while reading: {}", message);
+                            return Err(Error::new(ErrorKind::UnexpectedEof, message));
+                        }
+                    }
+
                     return Ok(false);
                 }
                 Ok(n) => {
                     // got n bytes, loop to determine if we need to read again
                     debug!("read {} bytes from transport", n);
                     self.pos += n;
+                    if !self.growable && self.pos == self.len() {
+                        return Ok(false);
+                    }
                 }
                 Err(e) => {
                     return match e.kind() {
@@ -102,7 +139,7 @@ impl Buffer {
                     debug!("wrote {} bytes", n);
                     self.pos += n;
                     if self.pos == self.len() {
-                        // done reading
+                        // done writing
                         return Ok(false);
                     }
                 }
@@ -133,13 +170,8 @@ impl From<Vec<u8>> for Buffer {
     fn from(content: Vec<u8>) -> Buffer {
         Buffer {
             content: content,
-            pos: 0
+            pos: 0,
+            growable: true
         }
-    }
-}
-
-impl Into<Vec<u8>> for Buffer {
-    fn into(self) -> Vec<u8> {
-        self.content
     }
 }

@@ -180,9 +180,9 @@ pub use serde_json::value as value;
 
 use header::ContentLength;
 
-use hyper::{Client as HttpClient, Decoder, Encoder, Method, Next, Get, Post, Head, Delete};
+use hyper::{Client as HttpClient, Decoder, Encoder, Method, Next, Get, Head, Post, Delete};
 use hyper::client::{Request as ClientRequest, Response as ClientResponse};
-use hyper::method::Method::Put;
+use hyper::method::Method::{Put, Connect, Trace};
 use hyper::net::HttpStream;
 use hyper::server::{Handler, Server, Request as HttpRequest, Response as HttpResponse};
 
@@ -293,12 +293,6 @@ impl<T> Drop for EdgeHandler<T> {
     }
 }
 
-fn set_capacity(buffer: &mut Buffer, headers: &hyper::Headers) {
-    if let Some(&ContentLength(len)) = headers.get::<ContentLength>() {
-        buffer.set_capacity(len as usize);
-    }
-}
-
 impl<T> EdgeHandler<T> {
     fn callback(&mut self) -> Next {
         let req = &mut self.request.as_mut().unwrap();
@@ -322,6 +316,81 @@ impl<T> EdgeHandler<T> {
             Next::wait()
         }
     }
+
+    fn bad_request(&mut self, message: &str) -> Next {
+        error!("Bad Request: {}", message);
+
+        let mut res = self.holder.new_response();
+        res.status(Status::BadRequest).content_type("text/plain; charset=UTF-8");
+        res.send(message);
+        Next::write()
+    }
+
+}
+
+fn check_request(req: &Request, buffer: &mut Option<Buffer>) -> ::std::result::Result<bool, &'static str> {
+    let headers = req.headers();
+
+    // RFC 7230 Hypertext Transfer Protocol (HTTP/1.1): Message Syntax and Routing
+    // 3.3.3 Message Body Length
+    // http://httpwg.org/specs/rfc7230.html#message.body.length
+    //
+    if let Some(&header::TransferEncoding(ref codings)) = headers.get() {
+        if codings.last() != Some(&header::Encoding::Chunked) {
+            // 3. If a Transfer-Encoding header field is present in a request and
+            // the chunked transfer coding is not the final encoding,
+            // the message body length cannot be determined reliably;
+            // the server MUST respond with the 400 (Bad Request) status code
+            // and then close the connection.
+            return Err("Last encoding of Transfer-Encoding must be chunked")
+        }
+
+        // Transfer-Encoding is correct, we have a payload
+        *buffer = Some(Buffer::new());
+    } else {
+        if let Some(&header::ContentLength(len)) = headers.get() {
+            // 5. If a valid Content-Length header field is present without Transfer-Encoding,
+            // its decimal value defines the expected message body length in octets.
+            // If the sender closes the connection or the recipient times out before the
+            // indicated number of octets are received, the recipient MUST consider the message
+            // to be incomplete and close the connection.
+
+            *buffer = Some(Buffer::new_fixed(len as usize));
+        } else if headers.has::<header::ContentLength>() {
+            // 4. If a message is received without Transfer-Encoding
+            // and with either multiple Content-Length header fields having
+            // differing field-values or a single Content-Length header field
+            // having an invalid value, then the message framing is invalid
+            // and the recipient MUST treat it as an unrecoverable error.
+            // If this is a request message, the server MUST respond with
+            // a 400 (Bad Request) status code and then close the connection.
+            return Err("Invalid Content-Length header");
+        } else {
+            // If this is a request message and none of the above are true,
+            // then the message body length is zero (no message body is present).
+            debug!("Request with empty message");
+            return Ok(false);
+        }
+    }
+
+    // RFC 7231 Hypertext Transfer Protocol (HTTP/1.1): Semantics and Content
+    // 4.3 Method Definitions
+    // http://httpwg.org/specs/rfc7231.html#method.definitions
+    //
+    // A payload within a GET/HEAD/DELETE/CONNECT request message has no defined
+    // semantics; sending a payload body on a GET/HEAD/DELETE/CONNECT request
+    // might cause some existing implementations to reject the request.
+    let method = req.method();
+    if *method == Get || *method == Head || *method == Delete || *method == Connect {
+        // payload in these methods has no defined semantics
+        warn!("Ignoring payload for {} method", *method);
+        Ok(false)
+    } else if *method == Trace {
+        Err("A client MUST NOT send a message body in a TRACE request.")
+    } else {
+        // payload is allowed
+        Ok(true)
+    }
 }
 
 /// Implements Handler for our EdgeHandler.
@@ -331,19 +400,17 @@ impl<T> Handler<HttpStream> for EdgeHandler<T> {
 
         match request::new(&self.router.base_url, req) {
             Ok(req) => {
-                let mut buffer = Buffer::new();
-                set_capacity(&mut buffer, &req.headers());
-
-                self.buffer = Some(buffer);
+                let result = check_request(&req, &mut self.buffer);
                 self.request = Some(req);
-                Next::read()
-            },
+
+                match result {
+                    Err(msg) => self.bad_request(msg),
+                    Ok(false) => self.callback(),
+                    Ok(true) => Next::read()
+                }
+            }
             Err(error) => {
-                let mut res = self.holder.new_response();
-                res.status(Status::BadRequest);
-                res.content_type("text/plain");
-                res.send(error.to_string());
-                Next::write()
+                self.bad_request(&error.to_string())
             }
         }
     }
@@ -376,17 +443,21 @@ impl<T> Handler<HttpStream> for EdgeHandler<T> {
         res.set_status(status);
         self.holder.set_headers(res.headers_mut());
 
-        // 4.4 Message Length
+        // 3.3.2 Content-Length
+        // http://httpwg.org/specs/rfc7230.html#header.content-length
         //
-        // 1.Any response message which "MUST NOT" include a message-body (such
-        // as the 1xx, 204, and 304 responses and any response to a HEAD
-        // request) is always terminated by the first empty line after the
-        // header fields, regardless of the entity-header fields present in
-        // the message.
+        // A server MUST NOT send a Content-Length header field in any response
+        // with a status code of 1xx (Informational) or 204 (No Content).
         //
+        // A server MAY send a Content-Length header field in a response to a HEAD request
+        // A server MAY send a Content-Length header field in a 304 (Not Modified) response
         if status.is_informational() ||
             status == Status::NoContent || status == Status::NotModified ||
             *self.request.as_ref().unwrap().method() == Head {
+            // we remove any ContentLength header in those cases
+            // even in 304 and response to HEAD
+            // because we cannot guarantee that the length is the same
+            res.headers_mut().remove::<ContentLength>();
             return Next::end();
         }
 
@@ -542,7 +613,9 @@ impl hyper::client::Handler<HttpStream> for ClientHandler {
     }
 
     fn on_response(&mut self, res: ClientResponse) -> Next {
-        set_capacity(&mut self.buffer, &res.headers());
+        if let Some(&ContentLength(len)) = res.headers().get::<ContentLength>() {
+            self.buffer.set_capacity(len as usize);
+        }
         unsafe { (*self.result).response = Some(res); }
 
         Next::read()
