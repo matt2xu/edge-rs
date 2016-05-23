@@ -1,4 +1,6 @@
 use hyper::{Control, Decoder, Encoder, Next};
+use hyper::HttpVersion::{Http09, Http10, Http11};
+
 use hyper::error::Error as HyperError;
 use hyper::header::{ContentLength, Encoding, TransferEncoding};
 use hyper::method::Method::{Connect, Delete, Get, Head, Trace};
@@ -20,12 +22,6 @@ pub struct EdgeHandler<T> {
     request: Option<Request>,
     buffer: Option<Buffer>,
     holder: ResponseHolder
-}
-
-impl<T> Drop for EdgeHandler<T> {
-    fn drop(&mut self) {
-        debug!("dropping edge handler");
-    }
 }
 
 impl<T> EdgeHandler<T> {
@@ -76,32 +72,34 @@ impl<T> EdgeHandler<T> {
 
 fn check_request(req: &Request, buffer: &mut Option<Buffer>) -> ::std::result::Result<bool, &'static str> {
     let headers = req.headers();
+    let http1x = { let version = req.version(); *version == Http09 || *version == Http10 || *version == Http11 };
 
     // RFC 7230 Hypertext Transfer Protocol (HTTP/1.1): Message Syntax and Routing
     // 3.3.3 Message Body Length
     // http://httpwg.org/specs/rfc7230.html#message.body.length
     //
-    if let Some(&TransferEncoding(ref codings)) = headers.get() {
-        if codings.last() != Some(&Encoding::Chunked) {
-            // 3. If a Transfer-Encoding header field is present in a request and
-            // the chunked transfer coding is not the final encoding,
-            // the message body length cannot be determined reliably;
-            // the server MUST respond with the 400 (Bad Request) status code
-            // and then close the connection.
-            return Err("Last encoding of Transfer-Encoding must be chunked")
-        }
+    let len =
+        if let Some(&TransferEncoding(ref codings)) = headers.get() {
+            if codings.last() != Some(&Encoding::Chunked) {
+                // 3. If a Transfer-Encoding header field is present in a request and
+                // the chunked transfer coding is not the final encoding,
+                // the message body length cannot be determined reliably;
+                // the server MUST respond with the 400 (Bad Request) status code
+                // and then close the connection.
+                return Err("Last encoding of Transfer-Encoding must be chunked")
+            }
 
-        // Transfer-Encoding is correct, we have a payload
-        *buffer = Some(Buffer::new());
-    } else {
-        if let Some(&ContentLength(len)) = headers.get() {
+            // Transfer-Encoding is correct, we have a payload
+            None
+        } else if let Some(&ContentLength(len)) = headers.get() {
             // 5. If a valid Content-Length header field is present without Transfer-Encoding,
             // its decimal value defines the expected message body length in octets.
-            // If the sender closes the connection or the recipient times out before the
-            // indicated number of octets are received, the recipient MUST consider the message
-            // to be incomplete and close the connection.
+            if len == 0 {
+                info!("Request with empty payload Content-Length: 0");
+                return Ok(false);
+            }
 
-            *buffer = Some(Buffer::new_fixed(len as usize));
+            Some(len as usize)
         } else if headers.has::<ContentLength>() {
             // 4. If a message is received without Transfer-Encoding
             // and with either multiple Content-Length header fields having
@@ -111,13 +109,15 @@ fn check_request(req: &Request, buffer: &mut Option<Buffer>) -> ::std::result::R
             // If this is a request message, the server MUST respond with
             // a 400 (Bad Request) status code and then close the connection.
             return Err("Invalid Content-Length header");
-        } else {
+        } else if http1x {
             // If this is a request message and none of the above are true,
             // then the message body length is zero (no message body is present).
-            debug!("Request with empty message");
             return Ok(false);
-        }
-    }
+        } else {
+            // in HTTP/2 a request message can have a body even if
+            // no Transfer-Encoding or Content-Length headers are present
+            None
+        };
 
     // RFC 7231 Hypertext Transfer Protocol (HTTP/1.1): Semantics and Content
     // 4.3 Method Definitions
@@ -129,12 +129,19 @@ fn check_request(req: &Request, buffer: &mut Option<Buffer>) -> ::std::result::R
     let method = req.method();
     if *method == Get || *method == Head || *method == Delete || *method == Connect {
         // payload in these methods has no defined semantics
-        warn!("Ignoring payload for {} method", *method);
+        if http1x {
+            // warns only for HTTP/1.x-compatible
+            // because we cannot know for sure whether there is a payload in HTTP/2
+            warn!("Ignoring payload for {} request", *method);
+        }
+
         Ok(false)
     } else if *method == Trace {
         Err("A client MUST NOT send a message body in a TRACE request.")
     } else {
         // payload is allowed
+        // if Content-Length is known create buffer with fixed size, otherwise allocate growable buffer
+        *buffer = Some(len.map_or(Buffer::new(), |len| Buffer::new_fixed(len)));
         Ok(true)
     }
 }

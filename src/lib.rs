@@ -250,7 +250,7 @@ impl<T> Edge<T> {
     /// Inserts the given callback for the given method and given route.
     pub fn insert(&mut self, method: Method, path: &str, callback: Callback<T>) {
         let router = Arc::get_mut(&mut self.router).unwrap();
-        router.insert(method, path.into(), callback)
+        router.insert(method, path, callback)
     }
 
     /// Runs the server and never returns.

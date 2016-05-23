@@ -42,12 +42,11 @@ impl<T> Router<T> {
 
     /// Finds the first route (if any) that matches the given path, and returns the associated callback.
     pub fn find_callback(&self, req: &mut Request) -> Option<Callback<T>> {
-        println!("path: {:?}", req.path());
+        info!("path: {:?}", req.path());
         if let Some(routes) = self.routes.get(req.method()) {
             let mut params = BTreeMap::new();
 
             'top: for &(ref route, ref callback) in routes.iter() {
-                println!("route: {:?}", route);
                 let mut it_route = route.segments.iter();
                 for actual in req.path() {
                     match it_route.next() {
@@ -67,32 +66,34 @@ impl<T> Router<T> {
                 params.clear();
             }
 
-            println!("no route matching method {} path {:?}", req.method(), req.path());
+            warn!("no route matching method {} path {:?}", req.method(), req.path());
         } else {
-            println!("no routes registered for method {}", req.method());
+            warn!("no routes registered for method {}", req.method());
         }
 
         None
     }
 
-    pub fn insert(&mut self, method: Method, route: Route, callback: Callback<T>) {
-        println!("register callback for route: {:?}", route);
+    pub fn insert(&mut self, method: Method, path: &str, callback: Callback<T>) {
+        let route = path.parse().unwrap();
+        info!("registered callback for {} (parsed as {:?})", path, route);
         self.routes.entry(method).or_insert(Vec::new()).push((route, callback));
     }
 }
 
 /// Creates a Route from a &str.
-impl<'a> Into<Route> for &'a str {
-    fn into(self) -> Route {
-        if self.len() == 0 {
-            panic!("route must not be empty");
+impl ::std::str::FromStr for Route {
+    type Err = &'static str;
+    fn from_str(from: &str) -> Result<Self, Self::Err> {
+        if from.len() == 0 {
+            return Err("route must not be empty");
         }
-        if &self[0..1] != "/" {
-            panic!("route must begin with a slash");
+        if &from[0..1] != "/" {
+            return Err("route must begin with a slash");
         }
 
-        let stripped = &self[1..];
-        let route = Route {
+        let stripped = &from[1..];
+        Ok(Route {
             segments:
                 stripped.split('/').map(|segment| if segment.len() > 0 && &segment[0..1] == ":" {
                         Segment::Variable(segment[1..].to_owned())
@@ -100,8 +101,6 @@ impl<'a> Into<Route> for &'a str {
                         Segment::Fixed(segment.to_owned())
                     }
                 ).collect::<Vec<Segment>>()
-        };
-        println!("into from {} to {:?}", self, route);
-        route
+        })
     }
 }

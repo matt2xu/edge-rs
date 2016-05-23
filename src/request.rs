@@ -5,7 +5,7 @@ use header::{Cookie as CookieHeader, ContentType};
 pub use header::CookiePair as Cookie;
 pub use hyper::status::StatusCode as Status;
 
-use hyper::{Headers, Method};
+use hyper::{Headers, HttpVersion, Method};
 use hyper::uri::RequestUri::{AbsolutePath, Star};
 use hyper::mime::{Mime, TopLevel, SubLevel};
 use hyper::server::Request as HttpRequest;
@@ -92,6 +92,11 @@ impl Request {
             Some(_) => Err(Error::new(ErrorKind::InvalidInput, "invalid Content-Type, expected application/x-www-form-urlencoded")),
             None => Err(Error::new(ErrorKind::InvalidInput, "missing Content-Type header"))
         }
+    }
+
+    /// Returns the HTTP version
+    pub fn version(&self) -> &HttpVersion {
+        self.inner.version()
     }
 
     /// Returns the method
