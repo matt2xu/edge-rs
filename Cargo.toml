@@ -1,6 +1,6 @@
 [package]
 name = "edge"
-version = "0.1.0"
+version = "0.2.0"
 description = "A simple Web framework for Rust."
 documentation = "http://matt2xu.github.io/edge-rs/edge/index.html"
 repository = "https://github.com/matt2xu/edge-rs/"
@@ -18,7 +18,7 @@ log = "0.3"
 
 [dependencies.hyper]
 git = "https://github.com/hyperium/hyper.git"
-rev = "ffb499b"
+rev = "ce3dbd1"
 default-features = false
 features = ["cookie"]
 
