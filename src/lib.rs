@@ -39,8 +39,8 @@
 //!
 //! use edge::{Edge, Request, Response};
 //!
-//! struct MyApp;
-//! impl MyApp {
+//! struct Hello;
+//! impl Hello {
 //!     fn hello(&self, _req: &mut Request, mut res: Response) {
 //!         res.content_type("text/plain");
 //!         res.send("Hello, world!")
@@ -48,9 +48,9 @@
 //! }
 //!
 //! fn main() {
-//!     let mut cter = Edge::new(MyApp);
-//!     cter.get("/", MyApp::hello);
-//!     cter.start("0.0.0.0:3000").unwrap();
+//!     let mut cter = Edge::new("0.0.0.0:3000", Hello);
+//!     cter.get("/", Hello::hello);
+//!     cter.start().unwrap();
 //! }
 //! ```
 //!
@@ -68,8 +68,8 @@
 //! use std::thread;
 //! use std::time::Duration;
 //!
-//! struct MyApp;
-//! impl MyApp {
+//! struct AsyncHello;
+//! impl AsyncHello {
 //!     fn hello(&self, _req: &mut Request, mut res: Response) {
 //!         thread::spawn(move || {
 //!             println!("waiting 1 second");
@@ -84,9 +84,9 @@
 //! }
 //!
 //! fn main() {
-//!     let mut cter = Edge::new(MyApp);
-//!     cter.get("/", MyApp::hello);
-//!     cter.start("0.0.0.0:3000").unwrap();
+//!     let mut cter = Edge::new("0.0.0.0:3000", AsyncHello);
+//!     cter.get("/", AsyncHello::hello);
+//!     cter.start().unwrap();
 //! }
 //! ```
 //!
@@ -103,11 +103,11 @@
 //! use edge::header::Server;
 //! use std::collections::BTreeMap;
 //!
-//! struct MyApp {
+//! struct Templating {
 //!     version: &'static str
 //! }
 //!
-//! impl MyApp {
+//! impl Templating {
 //!     fn page_handler(&self, req: &mut Request, mut res: Response) {
 //!         let mut data = BTreeMap::new();
 //!         data.insert("title", req.param("page").unwrap());
@@ -119,10 +119,10 @@
 //! }
 //!
 //! fn main() {
-//!     let app = MyApp { version: "0.1" };
-//!     let mut cter = Edge::new(app);
-//!     cter.get("/:page", MyApp::page_handler);
-//!     cter.start("0.0.0.0:3000").unwrap();
+//!     let app = Templating { version: "0.1" };
+//!     let mut cter = Edge::new("0.0.0.0:3000", app);
+//!     cter.get("/:page", Templating::page_handler);
+//!     cter.start().unwrap();
 //! }
 //! ```
 //!
@@ -140,11 +140,13 @@
 //! use edge::{Edge, Request, Response, Status};
 //! use std::sync::atomic::{AtomicUsize, Ordering};
 //!
-//! struct MyApp {
+//! struct Counting {
 //!     counter: AtomicUsize
 //! }
 //!
-//! impl MyApp {
+//! impl Counting {
+//!     fn new() -> Counting { Counting { counter: AtomicUsize::new(0) } }
+//!
 //!     fn home(&self, _req: &mut Request, mut res: Response) {
 //!         let visits = self.counter.load(Ordering::Relaxed);
 //!         self.counter.store(visits + 1, Ordering::Relaxed);
@@ -155,10 +157,9 @@
 //! }
 //!
 //! fn main() {
-//!     let app = MyApp { counter: AtomicUsize::new(0) };
-//!     let mut cter = Edge::new(app);
-//!     cter.get("/", MyApp::home);
-//!     cter.start("0.0.0.0:3000").unwrap();
+//!     let mut cter = Edge::new("0.0.0.0:3000", Counting::new());
+//!     cter.get("/", Counting::home);
+//!     cter.start().unwrap();
 //! }
 //! ```
 
