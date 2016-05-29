@@ -11,15 +11,13 @@ use serde::ser::Serialize as ToJson;
 pub use serde_json::value as value;
 
 use std::any::Any;
-use std::fmt::Debug;
 use std::borrow::Cow;
-use std::io::{ErrorKind, Read, Result, Write};
-use std::marker::PhantomData;
-
-use std::fs::{File, read_dir};
-use std::path::Path;
-
 use std::cell::UnsafeCell;
+use std::fmt::Debug;
+use std::fs::File;
+use std::io::{ErrorKind, Read, Write};
+use std::marker::PhantomData;
+use std::path::Path;
 use std::sync::{Arc};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -29,16 +27,18 @@ use deque::{self, Stealer, Worker};
 pub struct Resp {
     status: Status,
     headers: Headers,
+
     body: Buffer,
     worker: Option<Worker<Buffer>>,
     stealer: Option<Stealer<Buffer>>,
 
+    handlebars: Arc<Handlebars>,
     ctrl: Control,
     ended_or_notify: AtomicBool
 }
 
 impl Resp {
-    pub fn new(ctrl: Control) -> Resp {
+    pub fn new(handlebars: Arc<Handlebars>, ctrl: Control) -> Resp {
         Resp {
             status: Status::Ok,
             headers: Headers::default(),
@@ -46,6 +46,7 @@ impl Resp {
             worker: None,
             stealer: None,
 
+            handlebars: handlebars,
             ctrl: ctrl,
             ended_or_notify: AtomicBool::new(false)
         }
@@ -139,9 +140,9 @@ pub struct ResponseHolder {
 
 impl ResponseHolder {
 
-    pub fn new(control: Control) -> ResponseHolder {
+    pub fn new(handlebars: Arc<Handlebars>, control: Control) -> ResponseHolder {
         ResponseHolder {
-            resp: Arc::new(UnsafeCell::new(Resp::new(control)))
+            resp: Arc::new(UnsafeCell::new(Resp::new(handlebars, control)))
         }
     }
 
@@ -292,23 +293,16 @@ impl Response<Fresh> {
         self.len(0);
     }
 
-    /// Renders the template at the given path using the given data.
+    /// Renders the template with the given name using the given data.
     ///
     /// If no Content-Type header is set, the content type is set to `text/html`.
-    pub fn render<P: AsRef<Path>, T: ToJson>(self, path: P, data: T) {
+    pub fn render<T: ToJson>(self, name: &str, data: T) {
         let need_content_type = !self.resp().has_header::<ContentType>();
         if need_content_type {
             self.resp_mut().header(ContentType::html());
         }
 
-        let mut handlebars = Handlebars::new();
-        let path = path.as_ref();
-        let name = path.file_stem().unwrap().to_str().unwrap();
-
-        handlebars.register_template_file(name, path).unwrap();
-        // ignore errors if partials folder does not exist
-        let _ = register_partials(&mut handlebars);
-        let result = handlebars.render(name, &data);
+        let result = self.resp().handlebars.render(name, &data);
         self.send(result.unwrap())
     }
 
@@ -411,16 +405,4 @@ impl Response<Streaming> {
         debug!("append {} bytes", vec.len());
         self.resp().append(vec);
     }
-}
-
-fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
-    for it in try!(read_dir("views/partials")) {
-        let entry = try!(it);
-        let path = entry.path();
-        if path.extension().is_some() && path.extension().unwrap() == "hbs" {
-            let name = path.file_stem().unwrap().to_str().unwrap();
-            handlebars.register_template_file(name, path.as_path()).unwrap();
-        }
-    }
-    Ok(())
 }

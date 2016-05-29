@@ -13,7 +13,7 @@ impl Fetch {
 
     fn home(&self, _req: &mut Request, mut res: Response) {
         res.content_type("text/html");
-        res.render("views/fetch.hbs", BTreeMap::<String, value::Value>::new())
+        res.render("fetch", BTreeMap::<String, value::Value>::new())
     }
 
     fn fetch(&self, req: &mut Request, res: Response) {
@@ -50,8 +50,9 @@ impl Fetch {
 fn main() {
     env_logger::init().unwrap();
 
-    let mut cter = Edge::new("0.0.0.0:3000", Fetch);
-    cter.get("/", Fetch::home);
-    cter.get("/fetch", Fetch::fetch);
-    cter.start().unwrap();
+    let mut edge = Edge::new("0.0.0.0:3000", Fetch);
+    edge.get("/", Fetch::home);
+    edge.get("/fetch", Fetch::fetch);
+    edge.register_template("fetch");
+    edge.start().unwrap();
 }

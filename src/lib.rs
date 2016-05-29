@@ -48,9 +48,9 @@
 //! }
 //!
 //! fn main() {
-//!     let mut cter = Edge::new("0.0.0.0:3000", Hello);
-//!     cter.get("/", Hello::hello);
-//!     cter.start().unwrap();
+//!     let mut edge = Edge::new("0.0.0.0:3000", Hello);
+//!     edge.get("/", Hello::hello);
+//!     edge.start().unwrap();
 //! }
 //! ```
 //!
@@ -84,9 +84,9 @@
 //! }
 //!
 //! fn main() {
-//!     let mut cter = Edge::new("0.0.0.0:3000", AsyncHello);
-//!     cter.get("/", AsyncHello::hello);
-//!     cter.start().unwrap();
+//!     let mut edge = Edge::new("0.0.0.0:3000", AsyncHello);
+//!     edge.get("/", AsyncHello::hello);
+//!     edge.start().unwrap();
 //! }
 //! ```
 //!
@@ -114,15 +114,16 @@
 //!         data.insert("version", self.version);
 //!
 //!         res.content_type("text/html").header(Server(format!("Edge version {}", self.version)));
-//!         res.render("views/page.hbs", data)
+//!         res.render("tmpl", data)
 //!     }
 //! }
 //!
 //! fn main() {
 //!     let app = Templating { version: "0.1" };
-//!     let mut cter = Edge::new("0.0.0.0:3000", app);
-//!     cter.get("/:page", Templating::page_handler);
-//!     cter.start().unwrap();
+//!     let mut edge = Edge::new("0.0.0.0:3000", app);
+//!     edge.get("/:page", Templating::page_handler);
+//!     edge.register_template("tmpl");
+//!     edge.start().unwrap();
 //! }
 //! ```
 //!
@@ -179,6 +180,8 @@ pub use hyper::status::StatusCode as Status;
 
 pub use serde_json::value as value;
 
+use handlebars::Handlebars;
+
 use header::ContentLength;
 
 use hyper::{Client as HttpClient, Decoder, Encoder, Method, Next};
@@ -187,8 +190,10 @@ use hyper::method::Method::{Delete, Get, Head, Post, Put};
 use hyper::net::HttpStream;
 use hyper::server::Server;
 
+use std::fs::read_dir;
 use std::io::{Read, Result};
-use std::net::SocketAddr;
+use std::net::ToSocketAddrs;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc};
 use std::thread::{self, Thread};
 
@@ -203,23 +208,25 @@ pub use response::{Response, Fresh, Streaming};
 pub use router::Callback;
 
 use buffer::Buffer;
+use handler::EdgeShared;
 use router::Router;
 
 /// Structure for an Edge application.
 pub struct Edge<T> {
-    addr: SocketAddr,
-    inner: Arc<T>,
-    router: Arc<Router<T>>
+    shared: Arc<EdgeShared<T>>,
+    handlebars: Arc<Handlebars>
 }
 
 impl<T> Edge<T> {
 
-    /// Creates an Edge application using the given inner structure.
-    pub fn new(addr: &str, inner: T) -> Edge<T> {
+    /// Creates an Edge application using the given address and application.
+    pub fn new(addr: &str, app: T) -> Edge<T> {
         Edge {
-            addr: addr.parse().unwrap(),
-            inner: Arc::new(inner),
-            router: Arc::new(Router::new(addr))
+            shared: Arc::new(EdgeShared {
+                app: app,
+                router: Router::new(addr)
+            }),
+            handlebars: Arc::new(Handlebars::new())
         }
     }
 
@@ -250,25 +257,59 @@ impl<T> Edge<T> {
 
     /// Inserts the given callback for the given method and given route.
     pub fn insert(&mut self, method: Method, path: &str, callback: Callback<T>) {
-        let router = Arc::get_mut(&mut self.router).unwrap();
+        let ref mut router = Arc::get_mut(&mut self.shared).unwrap().router;
         router.insert(method, path, callback)
+    }
+
+    // Registers a template with the given name.
+    pub fn register_template(&mut self, name: &str) {
+        let mut path = PathBuf::new();
+        path.push("views");
+        path.push(name);
+        path.set_extension("hbs");
+
+        let handlebars = Arc::get_mut(&mut self.handlebars).unwrap();
+        handlebars.register_template_file(name, &path).unwrap();
     }
 
     /// Runs the server and never returns.
     ///
     /// This will block the current thread.
-    pub fn start(self) -> Result<()> {
-        let server = Server::http(&self.addr).unwrap();
+    pub fn start(mut self) -> Result<()> {
+        // register partials folder (if it exists)
+        let partials = Path::new("views/partials");
+        if partials.exists() {
+            let handlebars = Arc::get_mut(&mut self.handlebars).unwrap();
+            register_partials(handlebars).unwrap();
+        }
+
+        // get address and start listening
+        let addr = self.shared.router.base_url.to_socket_addrs().unwrap().next().unwrap();
+        let server = Server::http(&addr).unwrap();
+
+        // configure handler
         let (listening, server) = server.handle(move |control| {
             debug!("creating new edge handler");
 
-            handler::EdgeHandler::new(self.router.clone(), self.inner.clone(), control)
+            handler::EdgeHandler::new(self.shared.clone(), self.handlebars.clone(), control)
         }).unwrap();
 
         info!("Listening on http://{}", listening);
         server.run();
         Ok(())
     }
+}
+
+fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
+    for it in try!(read_dir("views/partials")) {
+        let entry = try!(it);
+        let path = entry.path();
+        if path.extension().is_some() && path.extension().unwrap() == "hbs" {
+            let name = path.file_stem().unwrap().to_str().unwrap();
+            handlebars.register_template_file(name, path.as_path()).unwrap();
+        }
+    }
+    Ok(())
 }
 
 pub struct Client {

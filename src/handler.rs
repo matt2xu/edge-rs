@@ -1,3 +1,5 @@
+use handlebars::Handlebars;
+
 use hyper::{Control, Decoder, Encoder, Next};
 use hyper::HttpVersion::{Http09, Http10, Http11};
 
@@ -15,32 +17,34 @@ use router::Router;
 
 use std::sync::Arc;
 
-pub struct EdgeHandler<T> {
-    router: Arc<Router<T>>,
-    app: Arc<T>,
+/// data shared by all handlers
+pub struct EdgeShared<T> {
+    pub app: T,
+    pub router: Router<T>
+}
 
+pub struct EdgeHandler<T> {
+    shared: Arc<EdgeShared<T>>,
     request: Option<Request>,
     buffer: Option<Buffer>,
     holder: ResponseHolder
 }
 
 impl<T> EdgeHandler<T> {
-    pub fn new(router: Arc<Router<T>>, app: Arc<T>, control: Control) -> EdgeHandler<T> {
+    pub fn new(shared: Arc<EdgeShared<T>>, handlebars: Arc<Handlebars>, control: Control) -> EdgeHandler<T> {
         EdgeHandler {
-            router: router,
-            app: app,
-
+            shared: shared,
             request: None,
             buffer: None,
-            holder: ResponseHolder::new(control)
+            holder: ResponseHolder::new(handlebars, control)
         }
     }
 
     fn callback(&mut self) -> Next {
         let req = &mut self.request.as_mut().unwrap();
 
-        if let Some(callback) = self.router.find_callback(req) {
-            callback(&self.app, req, self.holder.new_response());
+        if let Some(callback) = self.shared.router.find_callback(req) {
+            callback(&self.shared.app, req, self.holder.new_response());
         } else {
             warn!("route not found for path {:?}", req.path());
             let mut res = self.holder.new_response();
@@ -151,7 +155,7 @@ impl<T> Handler<HttpStream> for EdgeHandler<T> {
     fn on_request(&mut self, req: HttpRequest) -> Next {
         debug!("on_request");
 
-        match request::new(&self.router.base_url, req) {
+        match request::new(&self.shared.router.base_url, req) {
             Ok(req) => {
                 let result = check_request(&req, &mut self.buffer);
                 self.request = Some(req);

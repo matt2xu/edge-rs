@@ -42,15 +42,13 @@ impl MyApp {
         data.insert("last_name", value::to_value(last_name));
 
         res.content_type("text/plain; charset=UTF-8");
-        res.render("views/hello.hbs", data)
+        res.render("hello", data)
     }
 
     fn settings(&self, req: &mut Request, mut res: Response) {
         let mut cookies = req.cookies();
         println!("name cookie: {}", cookies.find(|cookie| cookie.name == "name")
             .map_or("nope", |cookie| &cookie.value));
-
-        //res.render(self.tmpl_path + "/sample.tpl", data)
 
         res.content_type("text/html; charset=UTF-8");
         res.send("<html><head><title>Settings</title></head><body><h1>Settings</h1></body></html>")
@@ -109,15 +107,19 @@ fn main() {
     env_logger::init().unwrap();
 
     let app = MyApp::new();
-    let mut cter = Edge::new("0.0.0.0:3000", app);
-    cter.get("/", MyApp::home);
-    cter.get("/hello/:first_name/:last_name", MyApp::hello);
-    cter.get("/settings", MyApp::settings);
-    cter.get("/static", MyApp::files);
+    let mut edge = Edge::new("0.0.0.0:3000", app);
+    edge.get("/", MyApp::home);
+    edge.get("/hello/:first_name/:last_name", MyApp::hello);
+    edge.get("/settings", MyApp::settings);
+    edge.get("/static", MyApp::files);
 
-    cter.get("/redirect", MyApp::redirect);
-    cter.get("/streaming", MyApp::streaming);
+    edge.get("/redirect", MyApp::redirect);
+    edge.get("/streaming", MyApp::streaming);
 
-    cter.post("/login", MyApp::login);
-    cter.start().unwrap();
+    edge.post("/login", MyApp::login);
+
+    // registers view views/hello.hbs
+    edge.register_template("hello");
+
+    edge.start().unwrap();
 }
