@@ -167,6 +167,7 @@
 extern crate hyper;
 extern crate url;
 extern crate handlebars;
+extern crate pulldown_cmark;
 extern crate serde;
 extern crate serde_json;
 extern crate deque;
@@ -180,7 +181,13 @@ pub use hyper::status::StatusCode as Status;
 
 pub use serde_json::value as value;
 
-use handlebars::Handlebars;
+use handlebars::{Context,
+    Handlebars,
+    JsonRender,
+    Renderable,
+    RenderContext,
+    RenderError,
+    Helper};
 
 use header::ContentLength;
 
@@ -190,8 +197,12 @@ use hyper::method::Method::{Delete, Get, Head, Post, Put};
 use hyper::net::HttpStream;
 use hyper::server::Server;
 
+use pulldown_cmark::Parser;
+use pulldown_cmark::{Options, OPTION_ENABLE_TABLES, OPTION_ENABLE_FOOTNOTES};
+use pulldown_cmark::html;
+
 use std::fs::read_dir;
-use std::io::{Read, Result};
+use std::io::{self, Read};
 use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc};
@@ -217,16 +228,64 @@ pub struct Edge<T> {
     handlebars: Arc<Handlebars>
 }
 
+fn render_html(text: String) -> String {
+    let mut opts = Options::empty();
+    opts.insert(OPTION_ENABLE_TABLES);
+    opts.insert(OPTION_ENABLE_FOOTNOTES);
+
+    let mut s = String::with_capacity(text.len() * 3 / 2);
+    let p = Parser::new_ext(&text, opts);
+    html::push_html(&mut s, p);
+    s
+}
+
+/// this code is based on code Copyright (c) 2015 Wayne Nilsen
+/// see https://github.com/waynenilsen/handlebars-markdown-helper/blob/master/src/lib.rs#L31
+///
+/// because the handlebars-markdown-helper crate does not allow custom options for Markdown rendering yet
+fn markdown_helper(c: &Context, h: &Helper, _ : &Handlebars, rc: &mut RenderContext) -> Result<(), RenderError> {
+    let markdown_text_var = try!(h.param(0).ok_or_else(|| RenderError {
+        desc: "Param not found for helper \"markdown\"".to_string()
+    }));
+    let markdown = c.navigate(rc.get_path(), &markdown_text_var).render();
+    let html = render_html(markdown);
+    try!(rc.writer.write_all(html.as_bytes()));
+    Ok(())
+}
+
+fn init_handlebars(handlebars: &mut Handlebars) -> io::Result<()> {
+    // register markdown helper
+    handlebars.register_helper("markdown", Box::new(::markdown_helper));
+
+    // register partials folder (if it exists)
+    let partials = Path::new("views/partials");
+    if partials.exists() {
+        for it in try!(read_dir("views/partials")) {
+            let entry = try!(it);
+            let path = entry.path();
+            if path.extension().is_some() && path.extension().unwrap() == "hbs" {
+                let name = path.file_stem().unwrap().to_str().unwrap();
+                handlebars.register_template_file(name, path.as_path()).unwrap();
+            }
+        }
+    }
+
+    Ok(())
+}
+
 impl<T> Edge<T> {
 
     /// Creates an Edge application using the given address and application.
     pub fn new(addr: &str, app: T) -> Edge<T> {
+        let mut handlebars = Handlebars::new();
+        init_handlebars(&mut handlebars).unwrap();
+
         Edge {
             shared: Arc::new(EdgeShared {
                 app: app,
                 router: Router::new(addr)
             }),
-            handlebars: Arc::new(Handlebars::new())
+            handlebars: Arc::new(handlebars)
         }
     }
 
@@ -275,14 +334,7 @@ impl<T> Edge<T> {
     /// Runs the server and never returns.
     ///
     /// This will block the current thread.
-    pub fn start(mut self) -> Result<()> {
-        // register partials folder (if it exists)
-        let partials = Path::new("views/partials");
-        if partials.exists() {
-            let handlebars = Arc::get_mut(&mut self.handlebars).unwrap();
-            register_partials(handlebars).unwrap();
-        }
-
+    pub fn start(self) -> io::Result<()> {
         // get address and start listening
         let addr = self.shared.router.base_url.to_socket_addrs().unwrap().next().unwrap();
         let server = Server::http(&addr).unwrap();
@@ -298,18 +350,6 @@ impl<T> Edge<T> {
         server.run();
         Ok(())
     }
-}
-
-fn register_partials(handlebars: &mut Handlebars) -> Result<()> {
-    for it in try!(read_dir("views/partials")) {
-        let entry = try!(it);
-        let path = entry.path();
-        if path.extension().is_some() && path.extension().unwrap() == "hbs" {
-            let name = path.file_stem().unwrap().to_str().unwrap();
-            handlebars.register_template_file(name, path.as_path()).unwrap();
-        }
-    }
-    Ok(())
 }
 
 pub struct Client {
