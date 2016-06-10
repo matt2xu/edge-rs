@@ -33,15 +33,21 @@ impl MyApp {
         res.send("<html><head><title>home</title></head><body><h1>Hello, world!</h1></body></html>")
     }
 
-    fn hello(&self,  req: &mut Request, mut res: Response) {
+    fn hello(&self, req: &mut Request, res: Response) {
         let first_name = req.param("first_name").unwrap_or("John");
         let last_name = req.param("last_name").unwrap_or("Doe");
 
         let mut data = BTreeMap::new();
         data.insert("first_name", value::to_value(first_name));
         data.insert("last_name", value::to_value(last_name));
+        data.insert("content", value::to_value(r#"# Hello!
+This is a list:
 
-        res.content_type("text/plain; charset=UTF-8");
+- item 1
+- item 2
+
+"#));
+
         res.render("hello", data)
     }
 

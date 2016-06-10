@@ -181,13 +181,7 @@ pub use hyper::status::StatusCode as Status;
 
 pub use serde_json::value as value;
 
-use handlebars::{Context,
-    Handlebars,
-    JsonRender,
-    Renderable,
-    RenderContext,
-    RenderError,
-    Helper};
+use handlebars::{Context, Handlebars, Helper, RenderContext, RenderError};
 
 use header::ContentLength;
 
@@ -202,7 +196,7 @@ use pulldown_cmark::{Options, OPTION_ENABLE_TABLES, OPTION_ENABLE_FOOTNOTES};
 use pulldown_cmark::html;
 
 use std::fs::read_dir;
-use std::io::{self, Read};
+use std::io::Result as IoResult;
 use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc};
@@ -228,13 +222,13 @@ pub struct Edge<T> {
     handlebars: Arc<Handlebars>
 }
 
-fn render_html(text: String) -> String {
+fn render_html(text: &str) -> String {
     let mut opts = Options::empty();
     opts.insert(OPTION_ENABLE_TABLES);
     opts.insert(OPTION_ENABLE_FOOTNOTES);
 
     let mut s = String::with_capacity(text.len() * 3 / 2);
-    let p = Parser::new_ext(&text, opts);
+    let p = Parser::new_ext(text, opts);
     html::push_html(&mut s, p);
     s
 }
@@ -243,17 +237,19 @@ fn render_html(text: String) -> String {
 /// see https://github.com/waynenilsen/handlebars-markdown-helper/blob/master/src/lib.rs#L31
 ///
 /// because the handlebars-markdown-helper crate does not allow custom options for Markdown rendering yet
-fn markdown_helper(c: &Context, h: &Helper, _ : &Handlebars, rc: &mut RenderContext) -> Result<(), RenderError> {
-    let markdown_text_var = try!(h.param(0).ok_or_else(|| RenderError {
-        desc: "Param not found for helper \"markdown\"".to_string()
-    }));
-    let markdown = c.navigate(rc.get_path(), &markdown_text_var).render();
+fn markdown_helper(_: &Context, h: &Helper, _ : &Handlebars, rc: &mut RenderContext) -> Result<(), RenderError> {
+    let markdown_text_var = try!(h.param(0).ok_or_else(|| RenderError::new(
+        "Param not found for helper \"markdown\"")
+    ));
+    let markdown = try!(markdown_text_var.value().as_string().ok_or_else(||
+        RenderError::new(format!("Expected a string for parameter {:?}", markdown_text_var))
+    ));
     let html = render_html(markdown);
     try!(rc.writer.write_all(html.as_bytes()));
     Ok(())
 }
 
-fn init_handlebars(handlebars: &mut Handlebars) -> io::Result<()> {
+fn init_handlebars(handlebars: &mut Handlebars) -> IoResult<()> {
     // register markdown helper
     handlebars.register_helper("markdown", Box::new(::markdown_helper));
 
@@ -334,7 +330,7 @@ impl<T> Edge<T> {
     /// Runs the server and never returns.
     ///
     /// This will block the current thread.
-    pub fn start(self) -> io::Result<()> {
+    pub fn start(self) -> IoResult<()> {
         // get address and start listening
         let addr = self.shared.router.base_url.to_socket_addrs().unwrap().next().unwrap();
         let server = Server::http(&addr).unwrap();

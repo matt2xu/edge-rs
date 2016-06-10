@@ -15,7 +15,7 @@ use std::borrow::Cow;
 use std::cell::UnsafeCell;
 use std::fmt::Debug;
 use std::fs::File;
-use std::io::{ErrorKind, Read, Write};
+use std::io::{ErrorKind, Read};
 use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::{Arc};
