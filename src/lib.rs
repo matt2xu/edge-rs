@@ -164,13 +164,15 @@
 //! }
 //! ```
 
-extern crate hyper;
-extern crate url;
+extern crate crossbeam;
+extern crate deque;
 extern crate handlebars;
+extern crate hyper;
+extern crate num_cpus;
 extern crate pulldown_cmark;
 extern crate serde;
 extern crate serde_json;
-extern crate deque;
+extern crate url;
 
 #[macro_use]
 extern crate log;
@@ -188,7 +190,7 @@ use header::ContentLength;
 use hyper::{Client as HttpClient, Decoder, Encoder, Method, Next};
 use hyper::client::{Request as ClientRequest, Response as ClientResponse};
 use hyper::method::Method::{Delete, Get, Head, Post, Put};
-use hyper::net::HttpStream;
+use hyper::net::{HttpListener, HttpStream};
 use hyper::server::Server;
 
 use pulldown_cmark::Parser;
@@ -269,7 +271,7 @@ fn init_handlebars(handlebars: &mut Handlebars) -> IoResult<()> {
     Ok(())
 }
 
-impl<T> Edge<T> {
+impl<T: Send + Sync> Edge<T> {
 
     /// Creates an Edge application using the given address and application.
     pub fn new(addr: &str, app: T) -> Edge<T> {
@@ -333,17 +335,23 @@ impl<T> Edge<T> {
     pub fn start(self) -> IoResult<()> {
         // get address and start listening
         let addr = self.shared.router.base_url.to_socket_addrs().unwrap().next().unwrap();
-        let server = Server::http(&addr).unwrap();
+        let listener = HttpListener::bind(&addr).unwrap();
 
-        // configure handler
-        let (listening, server) = server.handle(move |control| {
-            debug!("creating new edge handler");
+        // launches 1 thread per cpu
+        crossbeam::scope(|scope| {
+            for i in 0..num_cpus::get() {
+                let listener = listener.try_clone().unwrap();
+                let shared = &self.shared;
+                let handlebars = &self.handlebars;
+                scope.spawn(move || {
+                    info!("thread {} listening on http://{}", i, addr);
+                    Server::new(listener).handle(move |control| {
+                        handler::EdgeHandler::new(shared.clone(), handlebars.clone(), control)
+                    }).unwrap();
+                });
+            }
+        });
 
-            handler::EdgeHandler::new(self.shared.clone(), self.handlebars.clone(), control)
-        }).unwrap();
-
-        info!("Listening on http://{}", listening);
-        server.run();
         Ok(())
     }
 }

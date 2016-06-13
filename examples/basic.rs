@@ -11,7 +11,6 @@ use std::collections::BTreeMap;
 use edge::value;
 
 struct MyApp {
-    tmpl_path: String,
     counter: AtomicUsize
 }
 
@@ -19,28 +18,26 @@ impl MyApp {
 
     fn new() -> MyApp {
         MyApp {
-            tmpl_path: "toto".to_owned(),
             counter: AtomicUsize::new(0)
         }
     }
 
     fn home(&self, _req: &mut Request, mut res: Response) {
-        let cnt = self.counter.fetch_add(1, Ordering::SeqCst);
-
-        println!("in home, count = {}, path = {}", cnt, self.tmpl_path);
-
         res.content_type("text/html; charset=UTF-8").header(AccessControlAllowOrigin::Any);
         res.send("<html><head><title>home</title></head><body><h1>Hello, world!</h1></body></html>")
     }
 
     fn hello(&self, req: &mut Request, res: Response) {
+        let cnt = self.counter.fetch_add(1, Ordering::SeqCst);
+
         let first_name = req.param("first_name").unwrap_or("John");
         let last_name = req.param("last_name").unwrap_or("Doe");
 
         let mut data = BTreeMap::new();
         data.insert("first_name", value::to_value(first_name));
         data.insert("last_name", value::to_value(last_name));
-        data.insert("content", value::to_value(r#"# Hello!
+        data.insert("counter", value::to_value(&cnt));
+        data.insert("content", value::to_value(r#"## Contents
 This is a list:
 
 - item 1

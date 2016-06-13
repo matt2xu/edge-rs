@@ -10,8 +10,10 @@ authors = ["Matthieu Wipliez <matthieu.wipliez@gmail.com>"]
 keywords = ["http", "web", "framework", "asynchronous"]
 
 [dependencies]
+crossbeam = "0.2"
 deque = "0.3"
 log = "0.3"
+num_cpus = "0.2"
 pulldown-cmark = "0.0.8"
 serde = "0.7"
 serde_json = "0.7"
