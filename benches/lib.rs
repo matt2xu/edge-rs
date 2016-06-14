@@ -71,7 +71,7 @@ fn bench_segqueue_vecs(b: &mut Bencher) {
         let arc = Arc::new(SegQueue::new());
         let queue = arc.clone();
         thread::spawn(move || {
-            for i in 0 .. NUM_VECS {
+            for _ in 0 .. NUM_VECS {
                 queue.push(vec![0; SIZE_VEC]);
             }
         });
@@ -123,7 +123,7 @@ fn bench_msqueue_vecs(b: &mut Bencher) {
         let arc = Arc::new(MsQueue::new());
         let queue = arc.clone();
         thread::spawn(move || {
-            for i in 0 .. NUM_VECS {
+            for _ in 0 .. NUM_VECS {
                 queue.push(vec![0; SIZE_VEC]);
             }
         });
@@ -164,13 +164,13 @@ fn bench_channel_vec(b: &mut Bencher) {
     b.iter(|| {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            for i in 0 .. NUM_VECS {
+            for _ in 0 .. NUM_VECS {
                 tx.send(vec![0; SIZE_VEC]).unwrap();
             }
         });
 
         thread::spawn(move || {
-            for i in 0 .. NUM_VECS {
+            for _ in 0 .. NUM_VECS {
                 assert!(rx.recv().unwrap().len() == SIZE_VEC);
             }
         }).join().unwrap();
@@ -219,7 +219,7 @@ fn bench_lock_vecs(b: &mut Bencher) {
         let arc = Arc::new(RwLock::new(VecDeque::new()));
         let lock = arc.clone();
         thread::spawn(move || {
-            for i in 0 .. NUM_VECS {
+            for _ in 0 .. NUM_VECS {
                 if let Ok(mut guard) = lock.write() {
                     let deque = &mut guard;
                     deque.push_back(vec![0; SIZE_VEC]);
@@ -273,7 +273,7 @@ fn bench_deque_vecs(b: &mut Bencher) {
     b.iter(|| {
         let (worker, stealer) = deque::new();
         thread::spawn(move || {
-            for i in 0 .. NUM_VECS {
+            for _ in 0 .. NUM_VECS {
                 worker.push(vec![0; SIZE_VEC]);
             }
         });
@@ -283,6 +283,58 @@ fn bench_deque_vecs(b: &mut Bencher) {
             while i < NUM_VECS {
                 match stealer.steal() {
                     deque::Data(n) => {
+                        assert!(n.len() == SIZE_VEC);
+                        i += 1;
+                    }
+                    _ => ()
+                }
+            }
+        }).join().unwrap();
+    });
+}
+
+use crossbeam::sync::chase_lev::{self, Steal};
+
+#[bench]
+fn bench_chase_lev_ints(b: &mut Bencher) {
+    b.iter(|| {
+        let (mut worker, stealer) = chase_lev::deque();
+        thread::spawn(move || {
+            for i in 0 .. NUM_INTS {
+                worker.push(i);
+            }
+        });
+
+        thread::spawn(move || {
+            let mut i = 0;
+            while i < NUM_INTS {
+                match stealer.steal() {
+                    Steal::Data(n) => {
+                        assert!(n == i);
+                        i += 1;
+                    }
+                    _ => ()
+                }
+            }
+        }).join().unwrap();
+    });
+}
+
+#[bench]
+fn bench_chase_lev_vecs(b: &mut Bencher) {
+    b.iter(|| {
+        let (mut worker, stealer) = chase_lev::deque();
+        thread::spawn(move || {
+            for _ in 0 .. NUM_VECS {
+                worker.push(vec![0; SIZE_VEC]);
+            }
+        });
+
+        thread::spawn(move || {
+            let mut i = 0;
+            while i < NUM_VECS {
+                match stealer.steal() {
+                    Steal::Data(n) => {
                         assert!(n.len() == SIZE_VEC);
                         i += 1;
                     }
