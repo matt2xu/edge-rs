@@ -212,30 +212,30 @@ pub use request::Request;
 pub use response::{Response, Fresh, Streaming};
 pub use router::Callback;
 
-use handler::EdgeShared;
 use router::Router;
 
 /// Structure for an Edge application.
 pub struct Edge<T> {
-    shared: Arc<EdgeShared<T>>,
+    router: Router<T>,
     handlebars: Arc<Handlebars>
 }
 
-impl<T: Send + Sync> Edge<T> {
+impl<T: Default> Edge<T> {
 
     /// Creates an Edge application using the given address and application.
-    pub fn new(addr: &str, app: T) -> Edge<T> {
+    pub fn new(addr: &str) -> Edge<T> {
         let mut handlebars = Handlebars::new();
         init_handlebars(&mut handlebars).unwrap();
 
         Edge {
-            shared: Arc::new(EdgeShared {
-                app: app,
-                router: Router::new(addr)
-            }),
+            router: Router::new(addr),
             handlebars: Arc::new(handlebars)
         }
     }
+
+}
+
+impl<T> Edge<T> {
 
     /// Registers a callback for the given path for GET requests.
     pub fn get(&mut self, path: &str, callback: Callback<T>) {
@@ -264,8 +264,7 @@ impl<T: Send + Sync> Edge<T> {
 
     /// Inserts the given callback for the given method and given route.
     pub fn insert(&mut self, method: Method, path: &str, callback: Callback<T>) {
-        let ref mut router = Arc::get_mut(&mut self.shared).unwrap().router;
-        router.insert(method, path, callback)
+        self.router.insert(method, path, callback)
     }
 
     // Registers a template with the given name.
@@ -279,24 +278,29 @@ impl<T: Send + Sync> Edge<T> {
         handlebars.register_template_file(name, &path).unwrap();
     }
 
+}
+
+impl<T: Default> Edge<T> {
+
     /// Runs the server and never returns.
     ///
     /// This will block the current thread.
     pub fn start(self) -> IoResult<()> {
         // get address and start listening
-        let addr = self.shared.router.base_url.to_socket_addrs().unwrap().next().unwrap();
+        let addr = self.router.base_url.to_socket_addrs().unwrap().next().unwrap();
         let listener = HttpListener::bind(&addr).unwrap();
 
         // launches 1 thread per cpu
         crossbeam::scope(|scope| {
             for i in 0..num_cpus::get() {
                 let listener = listener.try_clone().unwrap();
-                let shared = &self.shared;
+                let router = &self.router;
                 let handlebars = &self.handlebars;
                 scope.spawn(move || {
                     info!("thread {} listening on http://{}", i, addr);
                     Server::new(listener).handle(move |control| {
-                        handler::EdgeHandler::new(shared.clone(), handlebars.clone(), control)
+                        let app = T::default();
+                        handler::EdgeHandler::new(app, &router, handlebars.clone(), control)
                     }).unwrap();
                 });
             }

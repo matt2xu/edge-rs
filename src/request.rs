@@ -81,7 +81,7 @@ impl Request {
 
     /// Reads the body of this request, parses it as an application/x-www-form-urlencoded format,
     /// and returns it as a vector of (name, value) pairs.
-    pub fn form(&mut self) -> Result<Vec<(String, String)>> {
+    pub fn form(&self) -> Result<Vec<(String, String)>> {
         let body = try!(self.body());
 
         match self.headers().get::<ContentType>() {
