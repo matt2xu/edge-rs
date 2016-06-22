@@ -185,12 +185,9 @@ pub use serde_json::value as value;
 
 use handlebars::{Context, Handlebars, Helper, RenderContext, RenderError};
 
-use header::ContentLength;
-
-use hyper::{Client as HttpClient, Decoder, Encoder, Method, Next};
-use hyper::client::{Request as ClientRequest, Response as ClientResponse};
+use hyper::Method;
 use hyper::method::Method::{Delete, Get, Head, Post, Put};
-use hyper::net::{HttpListener, HttpStream};
+use hyper::net::HttpListener;
 use hyper::server::Server;
 
 use pulldown_cmark::Parser;
@@ -201,20 +198,20 @@ use std::fs::read_dir;
 use std::io::Result as IoResult;
 use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc};
-use std::thread::{self, Thread};
+use std::sync::Arc;
 
 mod buffer;
+mod client;
 mod handler;
 mod router;
 mod request;
 mod response;
 
+pub use client::Client;
 pub use request::Request;
 pub use response::{Response, Fresh, Streaming};
 pub use router::Callback;
 
-use buffer::Buffer;
 use handler::EdgeShared;
 use router::Router;
 
@@ -222,53 +219,6 @@ use router::Router;
 pub struct Edge<T> {
     shared: Arc<EdgeShared<T>>,
     handlebars: Arc<Handlebars>
-}
-
-fn render_html(text: &str) -> String {
-    let mut opts = Options::empty();
-    opts.insert(OPTION_ENABLE_TABLES);
-    opts.insert(OPTION_ENABLE_FOOTNOTES);
-
-    let mut s = String::with_capacity(text.len() * 3 / 2);
-    let p = Parser::new_ext(text, opts);
-    html::push_html(&mut s, p);
-    s
-}
-
-/// this code is based on code Copyright (c) 2015 Wayne Nilsen
-/// see https://github.com/waynenilsen/handlebars-markdown-helper/blob/master/src/lib.rs#L31
-///
-/// because the handlebars-markdown-helper crate does not allow custom options for Markdown rendering yet
-fn markdown_helper(_: &Context, h: &Helper, _ : &Handlebars, rc: &mut RenderContext) -> Result<(), RenderError> {
-    let markdown_text_var = try!(h.param(0).ok_or_else(|| RenderError::new(
-        "Param not found for helper \"markdown\"")
-    ));
-    let markdown = try!(markdown_text_var.value().as_string().ok_or_else(||
-        RenderError::new(format!("Expected a string for parameter {:?}", markdown_text_var))
-    ));
-    let html = render_html(markdown);
-    try!(rc.writer.write_all(html.as_bytes()));
-    Ok(())
-}
-
-fn init_handlebars(handlebars: &mut Handlebars) -> IoResult<()> {
-    // register markdown helper
-    handlebars.register_helper("markdown", Box::new(::markdown_helper));
-
-    // register partials folder (if it exists)
-    let partials = Path::new("views/partials");
-    if partials.exists() {
-        for it in try!(read_dir("views/partials")) {
-            let entry = try!(it);
-            let path = entry.path();
-            if path.extension().is_some() && path.extension().unwrap() == "hbs" {
-                let name = path.file_stem().unwrap().to_str().unwrap();
-                handlebars.register_template_file(name, path.as_path()).unwrap();
-            }
-        }
-    }
-
-    Ok(())
 }
 
 impl<T: Send + Sync> Edge<T> {
@@ -356,112 +306,49 @@ impl<T: Send + Sync> Edge<T> {
     }
 }
 
-pub struct Client {
-    result: RequestResult
+fn render_html(text: &str) -> String {
+    let mut opts = Options::empty();
+    opts.insert(OPTION_ENABLE_TABLES);
+    opts.insert(OPTION_ENABLE_FOOTNOTES);
+
+    let mut s = String::with_capacity(text.len() * 3 / 2);
+    let p = Parser::new_ext(text, opts);
+    html::push_html(&mut s, p);
+    s
 }
 
-struct RequestResult {
-    body: Option<Vec<u8>>,
-    response: Option<ClientResponse>
+/// this code is based on code Copyright (c) 2015 Wayne Nilsen
+/// see https://github.com/waynenilsen/handlebars-markdown-helper/blob/master/src/lib.rs#L31
+///
+/// because the handlebars-markdown-helper crate does not allow custom options for Markdown rendering yet
+fn markdown_helper(_: &Context, h: &Helper, _ : &Handlebars, rc: &mut RenderContext) -> Result<(), RenderError> {
+    let markdown_text_var = try!(h.param(0).ok_or_else(|| RenderError::new(
+        "Param not found for helper \"markdown\"")
+    ));
+    let markdown = try!(markdown_text_var.value().as_string().ok_or_else(||
+        RenderError::new(format!("Expected a string for parameter {:?}", markdown_text_var))
+    ));
+    let html = render_html(markdown);
+    try!(rc.writer.write_all(html.as_bytes()));
+    Ok(())
 }
 
-impl RequestResult {
-    fn new() -> RequestResult {
-        RequestResult {
-            body: None,
-            response: None
-        }
-    }
-}
+fn init_handlebars(handlebars: &mut Handlebars) -> IoResult<()> {
+    // register markdown helper
+    handlebars.register_helper("markdown", Box::new(::markdown_helper));
 
-impl Client {
-    pub fn new() -> Client {
-        Client {
-            result: RequestResult::new()
-        }
-    }
-
-    pub fn request(&mut self, url: &str) -> Vec<u8> {
-        let client = HttpClient::new().unwrap();
-        let _ = client.request(url.parse().unwrap(), ClientHandler::new(&mut self.result));
-
-        // wait for request to complete
-        thread::park();
-
-        // close client and returns request body
-        client.close();
-
-        if let Some(buffer) = self.result.body.take() {
-            buffer
-        } else {
-            Vec::new()
-        }
-    }
-
-    pub fn status(&self) -> Status {
-        *self.result.response.as_ref().unwrap().status()
-    }
-}
-
-struct ClientHandler {
-    thread: Thread,
-    buffer: Buffer,
-    result: *mut RequestResult
-}
-
-unsafe impl Send for ClientHandler {}
-
-impl ClientHandler {
-    fn new(result: &mut RequestResult) -> ClientHandler {
-        ClientHandler {
-            thread: thread::current(),
-            buffer: Buffer::new(),
-            result: result as *mut RequestResult
-        }
-    }
-}
-
-impl Drop for ClientHandler {
-    fn drop(&mut self) {
-        unsafe { (*self.result).body = Some(self.buffer.take()); }
-
-        // unlocks waiting thread
-        self.thread.unpark();
-    }
-}
-
-impl hyper::client::Handler<HttpStream> for ClientHandler {
-
-    fn on_request(&mut self, _req: &mut ClientRequest) -> Next {
-        Next::read()
-    }
-
-    fn on_request_writable(&mut self, _encoder: &mut Encoder<HttpStream>) -> Next {
-        Next::read()
-    }
-
-    fn on_response(&mut self, res: ClientResponse) -> Next {
-        if let Some(&ContentLength(len)) = res.headers().get::<ContentLength>() {
-            self.buffer.set_capacity(len as usize);
-        }
-        unsafe { (*self.result).response = Some(res); }
-
-        Next::read()
-    }
-
-    fn on_response_readable(&mut self, decoder: &mut Decoder<HttpStream>) -> Next {
-        if let Ok(keep_reading) = self.buffer.read_from(decoder) {
-            if keep_reading {
-                return Next::read();
+    // register partials folder (if it exists)
+    let partials = Path::new("views/partials");
+    if partials.exists() {
+        for it in try!(read_dir("views/partials")) {
+            let entry = try!(it);
+            let path = entry.path();
+            if path.extension().is_some() && path.extension().unwrap() == "hbs" {
+                let name = path.file_stem().unwrap().to_str().unwrap();
+                handlebars.register_template_file(name, path.as_path()).unwrap();
             }
         }
-
-        Next::end()
     }
 
-    fn on_error(&mut self, err: hyper::Error) -> Next {
-        println!("ERROR: {}", err);
-        Next::remove()
-    }
-
+    Ok(())
 }
