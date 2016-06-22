@@ -5,29 +5,25 @@ extern crate edge;
 
 use edge::{Edge, Cookie, Request, Response, Status};
 use edge::header::AccessControlAllowOrigin;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use std::collections::BTreeMap;
 use edge::value;
 
+#[derive(Clone, Default)]
 struct MyApp {
-    counter: AtomicUsize
+    counter: Arc<AtomicUsize>
 }
 
 impl MyApp {
 
-    fn new() -> MyApp {
-        MyApp {
-            counter: AtomicUsize::new(0)
-        }
-    }
-
-    fn home(&self, _req: &mut Request, mut res: Response) {
+    fn home(&mut self, _req: &Request, mut res: Response) {
         res.content_type("text/html; charset=UTF-8").header(AccessControlAllowOrigin::Any);
         res.send("<html><head><title>home</title></head><body><h1>Hello, world!</h1></body></html>")
     }
 
-    fn hello(&self, req: &mut Request, res: Response) {
+    fn hello(&mut self, req: &Request, res: Response) {
         let cnt = self.counter.fetch_add(1, Ordering::SeqCst);
 
         let first_name = req.param("first_name").unwrap_or("John");
@@ -48,7 +44,7 @@ This is a list:
         res.render("hello", data)
     }
 
-    fn settings(&self, req: &mut Request, mut res: Response) {
+    fn settings(&mut self, req: &Request, mut res: Response) {
         let mut cookies = req.cookies();
         println!("name cookie: {}", cookies.find(|cookie| cookie.name == "name")
             .map_or("nope", |cookie| &cookie.value));
@@ -57,7 +53,7 @@ This is a list:
         res.send("<html><head><title>Settings</title></head><body><h1>Settings</h1></body></html>")
     }
 
-    fn login(&self, req: &mut Request, mut res: Response) {
+    fn login(&mut self, req: &Request, mut res: Response) {
         let form = req.form().unwrap();
         match form.iter().find(|pair| pair.0 == "username").map(|pair| &pair.1) {
             None => (),
@@ -72,12 +68,12 @@ This is a list:
         res.end(Status::NoContent)
     }
 
-    fn files(&self, req: &mut Request, res: Response) {
+    fn files(&mut self, req: &Request, res: Response) {
         let path = req.path()[1..].join("/");
         res.send_file("web/".to_string() + &path)
     }
 
-    fn redirect(&self, _req: &mut Request, res: Response) {
+    fn redirect(&mut self, _req: &Request, res: Response) {
         use std::thread;
         use std::time::Duration;
 
@@ -88,7 +84,7 @@ This is a list:
         });
     }
 
-    fn streaming(&self, _req: &mut Request, res: Response) {
+    fn streaming(&mut self, _req: &Request, res: Response) {
         use std::thread;
         use std::time::Duration;
 
@@ -109,8 +105,7 @@ This is a list:
 fn main() {
     env_logger::init().unwrap();
 
-    let app = MyApp::new();
-    let mut edge = Edge::new("0.0.0.0:3000", app);
+    let mut edge = Edge::new("0.0.0.0:3000");
     edge.get("/", MyApp::home);
     edge.get("/hello/:first_name/:last_name", MyApp::hello);
     edge.get("/settings", MyApp::settings);
@@ -124,5 +119,5 @@ fn main() {
     // registers view views/hello.hbs
     edge.register_template("hello");
 
-    edge.start().unwrap();
+    edge.start_with(MyApp::default()).unwrap();
 }

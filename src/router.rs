@@ -9,7 +9,7 @@ use response::Response;
 use url::Url;
 
 /// Signature for a callback method
-pub type Callback<T> = fn(&T, &mut Request, Response);
+pub type Callback<T> = fn(&mut T, &Request, Response);
 
 /// A segment is either a fixed string, or a variable with a name
 #[derive(Debug, Clone)]

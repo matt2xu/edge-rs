@@ -220,7 +220,7 @@ pub struct Edge<T> {
     handlebars: Arc<Handlebars>
 }
 
-impl<T: Default> Edge<T> {
+impl<T> Edge<T> {
 
     /// Creates an Edge application using the given address and application.
     pub fn new(addr: &str) -> Edge<T> {
@@ -232,10 +232,6 @@ impl<T: Default> Edge<T> {
             handlebars: Arc::new(handlebars)
         }
     }
-
-}
-
-impl<T> Edge<T> {
 
     /// Registers a callback for the given path for GET requests.
     pub fn get(&mut self, path: &str, callback: Callback<T>) {
@@ -280,12 +276,15 @@ impl<T> Edge<T> {
 
 }
 
+/// Defines an impl that creates a new instance of `T` for each request using
+/// `Default::default`.
 impl<T: Default> Edge<T> {
 
-    /// Runs the server and never returns.
+    /// Runs the server in one thread per cpu.
     ///
-    /// This will block the current thread.
-    pub fn start(self) -> IoResult<()> {
+    /// Creates one instance of `T` per request by calling `Default::default`.
+    /// This method blocks the current thread.
+    pub fn start(&mut self) -> IoResult<()> {
         // get address and start listening
         let addr = self.router.base_url.to_socket_addrs().unwrap().next().unwrap();
         let listener = HttpListener::bind(&addr).unwrap();
@@ -301,6 +300,39 @@ impl<T: Default> Edge<T> {
                     Server::new(listener).handle(move |control| {
                         let app = T::default();
                         handler::EdgeHandler::new(app, &router, handlebars.clone(), control)
+                    }).unwrap();
+                });
+            }
+        });
+
+        Ok(())
+    }
+}
+
+/// Defines an impl that creates a new instance of `T` for each request
+/// by cloning an initial instance of `T`.
+impl<T: Clone + Send + Sync> Edge<T> {
+
+    /// Runs the server in one thread per cpu.
+    ///
+    /// Creates one instance of `T` per request by cloning `app`.
+    /// This method blocks the current thread.
+    pub fn start_with(&mut self, app: T) -> IoResult<()> {
+        // get address and start listening
+        let addr = self.router.base_url.to_socket_addrs().unwrap().next().unwrap();
+        let listener = HttpListener::bind(&addr).unwrap();
+
+        // launches 1 thread per cpu
+        crossbeam::scope(|scope| {
+            for i in 0..num_cpus::get() {
+                let listener = listener.try_clone().unwrap();
+                let router = &self.router;
+                let handlebars = &self.handlebars;
+                let app = &app;
+                scope.spawn(move || {
+                    info!("thread {} listening on http://{}", i, addr);
+                    Server::new(listener).handle(move |control| {
+                        handler::EdgeHandler::new(app.clone(), &router, handlebars.clone(), control)
                     }).unwrap();
                 });
             }

@@ -38,10 +38,10 @@ impl<'a, T> EdgeHandler<'a, T> {
     }
 
     fn callback(&mut self) -> Next {
-        let req = &mut self.request.as_mut().unwrap();
+        let req = self.request.as_mut().unwrap();
 
         if let Some(callback) = self.router.find_callback(req) {
-            callback(&self.app, req, self.holder.new_response());
+            callback(&mut self.app, req, self.holder.new_response());
         } else {
             warn!("route not found for path {:?}", req.path());
             let mut res = self.holder.new_response();

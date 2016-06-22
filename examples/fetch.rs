@@ -8,15 +8,16 @@ use edge::value;
 
 use std::collections::BTreeMap;
 
+#[derive(Default)]
 struct Fetch;
 impl Fetch {
 
-    fn home(&self, _req: &mut Request, mut res: Response) {
+    fn home(&mut self, _req: &Request, mut res: Response) {
         res.content_type("text/html");
         res.render("fetch", BTreeMap::<String, value::Value>::new())
     }
 
-    fn fetch(&self, req: &mut Request, res: Response) {
+    fn fetch(&mut self, req: &Request, res: Response) {
         let url = req.query("url").unwrap_or("http://google.com").to_string();
 
         use std::thread;
@@ -50,7 +51,7 @@ impl Fetch {
 fn main() {
     env_logger::init().unwrap();
 
-    let mut edge = Edge::new("0.0.0.0:3000", Fetch);
+    let mut edge = Edge::new("0.0.0.0:3000");
     edge.get("/", Fetch::home);
     edge.get("/fetch", Fetch::fetch);
     edge.register_template("fetch");
