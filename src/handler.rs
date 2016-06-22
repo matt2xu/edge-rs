@@ -15,9 +15,7 @@ use request::{self, Request};
 use response::ResponseHolder;
 use router::Router;
 
-use std::sync::Arc;
-
-/// a handler
+/// a handler that lasts only the time of a request
 pub struct EdgeHandler<'a, T: 'a> {
     app: T,
     router: &'a Router<T>,
@@ -27,7 +25,11 @@ pub struct EdgeHandler<'a, T: 'a> {
 }
 
 impl<'a, T> EdgeHandler<'a, T> {
-    pub fn new(app: T, router: &'a Router<T>, handlebars: Arc<Handlebars>, control: Control) -> EdgeHandler<T> {
+    pub fn new(app: T, router: &'a Router<T>, handlebars: &'a Handlebars, control: Control) -> EdgeHandler<'a, T> {
+        // we want to avoid having a Response<'a> because it cannot be moved to a thread
+        // and we know that the lifetime of handlebars outlives the lifetime of the handler by design
+        let handlebars = unsafe { ::std::mem::transmute(handlebars) };
+
         EdgeHandler {
             app: app,
             router: router,

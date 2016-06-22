@@ -198,7 +198,6 @@ use std::fs::read_dir;
 use std::io::Result as IoResult;
 use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 mod buffer;
 mod client;
@@ -217,7 +216,7 @@ use router::Router;
 /// Structure for an Edge application.
 pub struct Edge<T> {
     router: Router<T>,
-    handlebars: Arc<Handlebars>
+    handlebars: Handlebars
 }
 
 impl<T> Edge<T> {
@@ -229,7 +228,7 @@ impl<T> Edge<T> {
 
         Edge {
             router: Router::new(addr),
-            handlebars: Arc::new(handlebars)
+            handlebars: handlebars
         }
     }
 
@@ -270,8 +269,7 @@ impl<T> Edge<T> {
         path.push(name);
         path.set_extension("hbs");
 
-        let handlebars = Arc::get_mut(&mut self.handlebars).unwrap();
-        handlebars.register_template_file(name, &path).unwrap();
+        self.handlebars.register_template_file(name, &path).unwrap();
     }
 
 }
@@ -299,7 +297,7 @@ impl<T: Default> Edge<T> {
                     info!("thread {} listening on http://{}", i, addr);
                     Server::new(listener).handle(move |control| {
                         let app = T::default();
-                        handler::EdgeHandler::new(app, &router, handlebars.clone(), control)
+                        handler::EdgeHandler::new(app, &router, &handlebars, control)
                     }).unwrap();
                 });
             }
@@ -332,7 +330,7 @@ impl<T: Clone + Send + Sync> Edge<T> {
                 scope.spawn(move || {
                     info!("thread {} listening on http://{}", i, addr);
                     Server::new(listener).handle(move |control| {
-                        handler::EdgeHandler::new(app.clone(), &router, handlebars.clone(), control)
+                        handler::EdgeHandler::new(app.clone(), &router, &handlebars, control)
                     }).unwrap();
                 });
             }

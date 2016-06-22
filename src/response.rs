@@ -32,13 +32,13 @@ pub struct Resp {
     worker: Option<Worker<Buffer>>,
     stealer: Option<Stealer<Buffer>>,
 
-    handlebars: Arc<Handlebars>,
+    handlebars: &'static Handlebars,
     ctrl: Control,
     ended_or_notify: AtomicBool
 }
 
 impl Resp {
-    pub fn new(handlebars: Arc<Handlebars>, ctrl: Control) -> Resp {
+    pub fn new(handlebars: &'static Handlebars, ctrl: Control) -> Resp {
         Resp {
             status: Status::Ok,
             headers: Headers::default(),
@@ -140,7 +140,7 @@ pub struct ResponseHolder {
 
 impl ResponseHolder {
 
-    pub fn new(handlebars: Arc<Handlebars>, control: Control) -> ResponseHolder {
+    pub fn new(handlebars: &'static Handlebars, control: Control) -> ResponseHolder {
         ResponseHolder {
             resp: Arc::new(UnsafeCell::new(Resp::new(handlebars, control)))
         }
