@@ -10,40 +10,53 @@ use hyper::net::HttpStream;
 use hyper::server::{Handler, Request as HttpRequest, Response as HttpResponse};
 use hyper::status::StatusCode as Status;
 
+use scoped_pool::Scope;
+
 use buffer::Buffer;
 use request::{self, Request};
 use response::ResponseHolder;
 use router::Router;
 
 /// a handler that lasts only the time of a request
-pub struct EdgeHandler<'a, T: 'a> {
-    app: T,
-    router: &'a Router<T>,
+/// scope outlives handler
+pub struct EdgeHandler<'handler, 'scope: 'handler, T: 'scope + Send> {
+    scope: &'handler Scope<'scope>,
+    app: Option<T>,
+    router: &'handler Router<T>,
     request: Option<Request>,
+    is_head_request: bool,
     buffer: Option<Buffer>,
     holder: ResponseHolder
 }
 
-impl<'a, T> EdgeHandler<'a, T> {
-    pub fn new(app: T, router: &'a Router<T>, handlebars: &'a Handlebars, control: Control) -> EdgeHandler<'a, T> {
+impl<'handler, 'scope, T: Send> EdgeHandler<'handler, 'scope, T> {
+    pub fn new(scope: &'handler Scope<'scope>, app: T, router: &'handler Router<T>, handlebars: &'handler Handlebars, control: Control) -> EdgeHandler<'handler, 'scope, T> {
         // we want to avoid having a Response<'a> because it cannot be moved to a thread
         // and we know that the lifetime of handlebars outlives the lifetime of the handler by design
         let handlebars = unsafe { ::std::mem::transmute(handlebars) };
 
         EdgeHandler {
-            app: app,
+            scope: scope,
+            app: Some(app),
             router: router,
             request: None,
+            is_head_request: false,
             buffer: None,
             holder: ResponseHolder::new(handlebars, control)
         }
     }
 
     fn callback(&mut self) -> Next {
-        let req = self.request.as_mut().unwrap();
+        let mut req = self.request.take().unwrap();
 
-        if let Some(callback) = self.router.find_callback(req) {
-            callback(&mut self.app, req, self.holder.new_response());
+        if let Some(callback) = self.router.find_callback(&mut req) {
+            let mut app = self.app.take().unwrap();
+            let response = self.holder.new_response();
+
+            // add job to scoped pool
+            self.scope.execute(move || {
+                callback(&mut app, &req, response);
+            });
         } else {
             warn!("route not found for path {:?}", req.path());
             let mut res = self.holder.new_response();
@@ -74,13 +87,14 @@ impl<'a, T> EdgeHandler<'a, T> {
 }
 
 /// Implements Handler for our EdgeHandler.
-impl<'a, T> Handler<HttpStream> for EdgeHandler<'a, T> {
+impl<'handler, 'scope, T: Send> Handler<HttpStream> for EdgeHandler<'handler, 'scope, T> {
     fn on_request(&mut self, req: HttpRequest) -> Next {
         debug!("on_request");
 
         match request::new(&self.router.base_url, req) {
             Ok(req) => {
                 let result = check_request(&req, &mut self.buffer);
+                self.is_head_request = *req.method() == Head;
                 self.request = Some(req);
 
                 match result {
@@ -133,7 +147,7 @@ impl<'a, T> Handler<HttpStream> for EdgeHandler<'a, T> {
         // A server MAY send a Content-Length header field in a 304 (Not Modified) response
         if status.is_informational() ||
             status == Status::NoContent || status == Status::NotModified ||
-            *self.request.as_ref().unwrap().method() == Head {
+            self.is_head_request {
             // we remove any ContentLength header in those cases
             // even in 304 and response to HEAD
             // because we cannot guarantee that the length is the same

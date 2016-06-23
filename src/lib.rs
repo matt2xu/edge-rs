@@ -169,6 +169,7 @@ extern crate handlebars;
 extern crate hyper;
 extern crate num_cpus;
 extern crate pulldown_cmark;
+extern crate scoped_pool;
 extern crate serde;
 extern crate serde_json;
 extern crate url;
@@ -192,6 +193,8 @@ use hyper::server::Server;
 use pulldown_cmark::Parser;
 use pulldown_cmark::{Options, OPTION_ENABLE_TABLES, OPTION_ENABLE_FOOTNOTES};
 use pulldown_cmark::html;
+
+use scoped_pool::Pool;
 
 use std::fs::read_dir;
 use std::io::Result as IoResult;
@@ -275,7 +278,7 @@ impl<T> Edge<T> {
 
 /// Defines an impl that creates a new instance of `T` for each request using
 /// `Default::default`.
-impl<T: Default> Edge<T> {
+impl<T: Default + Send> Edge<T> {
 
     /// Runs the server in one thread per cpu.
     ///
@@ -286,20 +289,24 @@ impl<T: Default> Edge<T> {
         let addr = self.router.base_url.to_socket_addrs().unwrap().next().unwrap();
         let listener = HttpListener::bind(&addr).unwrap();
 
-        // launches 1 thread per cpu
-        crossbeam::scope(|scope| {
-            for i in 0..num_cpus::get() {
-                let listener = listener.try_clone().unwrap();
-                let router = &self.router;
-                let handlebars = &self.handlebars;
-                scope.spawn(move || {
-                    info!("thread {} listening on http://{}", i, addr);
-                    Server::new(listener).handle(move |control| {
-                        let app = T::default();
-                        handler::EdgeHandler::new(app, &router, &handlebars, control)
-                    }).unwrap();
-                });
-            }
+        // 50% threads for the pool, 50% for the listeners
+        let num_threads = ::std::cmp::max(num_cpus::get() / 2, 1);
+        let pool = Pool::new(num_threads);
+        pool.scoped(|pool_scope| {
+            crossbeam::scope(|scope| {
+                for i in 0..num_threads {
+                    let listener = listener.try_clone().unwrap();
+                    let router = &self.router;
+                    let handlebars = &self.handlebars;
+                    scope.spawn(move || {
+                        info!("thread {} listening on http://{}", i, addr);
+                        Server::new(listener).handle(move |control| {
+                            let app = T::default();
+                            handler::EdgeHandler::new(pool_scope, app, &router, &handlebars, control)
+                        }).unwrap();
+                    });
+                }
+            });
         });
 
         Ok(())
@@ -319,20 +326,24 @@ impl<T: Clone + Send + Sync> Edge<T> {
         let addr = self.router.base_url.to_socket_addrs().unwrap().next().unwrap();
         let listener = HttpListener::bind(&addr).unwrap();
 
-        // launches 1 thread per cpu
-        crossbeam::scope(|scope| {
-            for i in 0..num_cpus::get() {
-                let listener = listener.try_clone().unwrap();
-                let router = &self.router;
-                let handlebars = &self.handlebars;
-                let app = &app;
-                scope.spawn(move || {
-                    info!("thread {} listening on http://{}", i, addr);
-                    Server::new(listener).handle(move |control| {
-                        handler::EdgeHandler::new(app.clone(), &router, &handlebars, control)
-                    }).unwrap();
-                });
-            }
+        // 50% threads for the pool, 50% for the listeners
+        let num_threads = ::std::cmp::max(num_cpus::get() / 2, 1);
+        let pool = Pool::new(num_threads);
+        pool.scoped(|pool_scope| {
+            crossbeam::scope(|scope| {
+                for i in 0..num_threads {
+                    let listener = listener.try_clone().unwrap();
+                    let router = &self.router;
+                    let handlebars = &self.handlebars;
+                    let app = &app;
+                    scope.spawn(move || {
+                        info!("thread {} listening on http://{}", i, addr);
+                        Server::new(listener).handle(move |control| {
+                            handler::EdgeHandler::new(pool_scope, app.clone(), &router, &handlebars, control)
+                        }).unwrap();
+                    });
+                }
+            });
         });
 
         Ok(())
