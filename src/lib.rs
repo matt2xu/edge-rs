@@ -210,7 +210,7 @@ mod response;
 
 pub use client::Client;
 pub use request::Request;
-pub use response::{Response, Fresh, Streaming};
+pub use response::{Response, Streaming};
 pub use router::Callback;
 
 use router::Router;

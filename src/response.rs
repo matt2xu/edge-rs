@@ -10,13 +10,11 @@ use serde::ser::Serialize as ToJson;
 
 pub use serde_json::value as value;
 
-use std::any::Any;
 use std::borrow::Cow;
 use std::cell::UnsafeCell;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{ErrorKind, Read};
-use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::{Arc};
 
@@ -116,9 +114,7 @@ impl ResponseHolder {
 
     pub fn new_response(&mut self) -> Response {
         Response {
-            resp: self.resp.clone(),
-            streaming: false,
-            _marker: PhantomData
+            resp: self.resp.clone()
         }
     }
 
@@ -158,31 +154,21 @@ impl ResponseHolder {
 /// or deferred pending some computation (asynchronous mode).
 ///
 /// The response is sent when it is dropped.
-pub struct Response<W: Any = Fresh> {
-    resp: Arc<UnsafeCell<Resp>>,
-    streaming: bool,
-    _marker: PhantomData<W>
+pub struct Response {
+    resp: Arc<UnsafeCell<Resp>>
 }
 
 // no worries, the response is always modified by only one thread at a time
 unsafe impl Send for Response {}
 
-impl<T: Any> Drop for Response<T> {
+impl Drop for Response {
     fn drop(&mut self) {
-        debug!("drop response (streaming? {})", self.streaming);
-        if self.streaming {
-            // append an empty buffer to indicate there is no more data left, and notify handler
-            self.resp_mut().append(vec![]);
-        } else {
-            self.resp().notify();
-        }
+        self.resp().notify();
     }
 }
 
-pub enum Fresh {}
-pub enum Streaming {}
+impl Response {
 
-impl<W: Any> Response<W> {
     fn resp(&self) -> &Resp {
         unsafe {
             &*self.resp.get()
@@ -194,9 +180,7 @@ impl<W: Any> Response<W> {
             &mut *self.resp.get()
         }
     }
-}
 
-impl Response<Fresh> {
     /// Sets the status code of this response.
     pub fn status(&mut self, status: Status) -> &mut Self {
         self.resp_mut().status(status);
@@ -347,17 +331,36 @@ impl Response<Fresh> {
     /// Moves to streaming mode.
     ///
     /// If no Content-Length is set, use Transfer-Encoding: chunked
-    pub fn stream(self) -> Response<Streaming> {
+    pub fn stream(self) -> Streaming {
         self.resp_mut().init_deque();
-        Response {
-            resp: self.resp.clone(),
-            streaming: true,
-            _marker: PhantomData
+        Streaming {
+            resp: self.resp.clone()
         }
     }
 }
 
-impl Response<Streaming> {
+pub struct Streaming {
+    resp: Arc<UnsafeCell<Resp>>
+}
+
+// no worries, the response is always modified by only one thread at a time
+unsafe impl Send for Streaming {}
+
+impl Drop for Streaming {
+    fn drop(&mut self) {
+        // append an empty buffer to indicate there is no more data left, and notify handler
+        self.resp_mut().append(vec![]);
+    }
+}
+
+impl Streaming {
+
+    fn resp_mut(&self) -> &mut Resp {
+        unsafe {
+            &mut *self.resp.get()
+        }
+    }
+
     /// Appends the given content to this response's body.
     pub fn append<D: Into<Vec<u8>>>(&mut self, content: D) {
         let vec = content.into();
