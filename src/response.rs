@@ -22,7 +22,7 @@ use std::sync::{Arc};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use buffer::Buffer;
-use deque::{self, Stealer, Worker};
+use crossbeam::sync::chase_lev::{deque, Steal, Stealer, Worker};
 
 pub struct Resp {
     status: Status,
@@ -117,8 +117,8 @@ impl Resp {
         self.body.len()
     }
 
-    fn append<D: Into<Buffer>>(&self, buffer: D) {
-        self.worker.as_ref().unwrap().push(buffer.into());
+    fn append<D: Into<Buffer>>(&mut self, buffer: D) {
+        self.worker.as_mut().unwrap().push(buffer.into());
         self.notify();
     }
 
@@ -127,7 +127,7 @@ impl Resp {
     }
 
     fn init_deque(&mut self) {
-        let (worker, stealer) = deque::new();
+        let (worker, stealer) = deque();
         self.worker = Some(worker);
         self.stealer = Some(stealer);
     }
@@ -176,9 +176,9 @@ impl ResponseHolder {
 
     pub fn pop(&mut self) -> Option<Buffer> {
         match self.resp().stealer.as_ref().unwrap().steal() {
-            deque::Data(buffer) => Some(buffer),
-            deque::Empty => None,
-            deque::Abort => panic!("abort")
+            Steal::Data(buffer) => Some(buffer),
+            Steal::Empty => None,
+            Steal::Abort => panic!("abort")
         }
     }
 
@@ -213,7 +213,7 @@ impl<T: Any> Drop for Response<T> {
         debug!("drop response (streaming? {})", self.streaming);
         if self.streaming {
             // append an empty buffer to indicate there is no more data left, and notify handler
-            self.resp().append(vec![]);
+            self.resp_mut().append(vec![]);
         } else {
             self.resp().done();
         }
@@ -403,6 +403,6 @@ impl Response<Streaming> {
     pub fn append<D: Into<Vec<u8>>>(&mut self, content: D) {
         let vec = content.into();
         debug!("append {} bytes", vec.len());
-        self.resp().append(vec);
+        self.resp_mut().append(vec);
     }
 }

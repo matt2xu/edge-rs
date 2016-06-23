@@ -165,7 +165,6 @@
 //! ```
 
 extern crate crossbeam;
-extern crate deque;
 extern crate handlebars;
 extern crate hyper;
 extern crate num_cpus;
