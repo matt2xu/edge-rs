@@ -19,7 +19,6 @@ use std::io::{ErrorKind, Read};
 use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::{Arc};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use buffer::Buffer;
 use crossbeam::sync::chase_lev::{deque, Steal, Stealer, Worker};
@@ -33,8 +32,7 @@ pub struct Resp {
     stealer: Option<Stealer<Buffer>>,
 
     handlebars: &'static Handlebars,
-    ctrl: Control,
-    ended_or_notify: AtomicBool
+    ctrl: Control
 }
 
 impl Resp {
@@ -47,42 +45,12 @@ impl Resp {
             stealer: None,
 
             handlebars: handlebars,
-            ctrl: ctrl,
-            ended_or_notify: AtomicBool::new(false)
-        }
-    }
-
-    /// called by handler to know whether we can write the response or not
-    ///
-    /// two possible cases:
-    ///   - done before can_write: in synchronous style, done is called first,
-    ///     sets ended_or_notify to true and does not notify the handler
-    ///   - can_write before done: response not done yet, can_write is called first,
-    ///     sets ended_or_notify to true so that when done is called, it will notify the handler
-    fn can_write(&self) -> bool {
-        if self.ended_or_notify.compare_and_swap(false, true, Ordering::AcqRel) {
-            // if true, response already ended, we can write it
-            true
-        } else {
-            // if false, response did not end yet
-            // ended has been set to true to mean "need to notify handler"
-            false
-        }
-    }
-
-    /// mirror function of can_write, called by Response
-    fn done(&self) {
-        if self.ended_or_notify.compare_and_swap(false, true, Ordering::AcqRel) {
-            // if true, means we need to notify, the flag is not updated
-            self.notify();
-        } else {
-            // if previously false: no need to notify
-            // ended has been set to true to mean "response ended"
+            ctrl: ctrl
         }
     }
 
     /// notify handler we have something to write
-    /// called by done and append
+    /// called by drop and append
     fn notify(&self) {
         if let Err(e) = self.ctrl.ready(Next::write()) {
             error!("could not notify handler: {}", e);
@@ -181,15 +149,6 @@ impl ResponseHolder {
             Steal::Abort => panic!("abort")
         }
     }
-
-    /// two possible cases:
-    ///   - done before can_write: in synchronous style, done is called first,
-    ///     sets ended_or_notify to true and does not notify the handler
-    ///   - can_write before done: response not done yet, can_write is called first,
-    ///     sets ended_or_notify to true so that when done is called, it will notify the handler
-    pub fn can_write(&self) -> bool {
-        self.resp().can_write()
-    }
 }
 
 /// This represents the response that will be sent back to the application.
@@ -215,7 +174,7 @@ impl<T: Any> Drop for Response<T> {
             // append an empty buffer to indicate there is no more data left, and notify handler
             self.resp_mut().append(vec![]);
         } else {
-            self.resp().done();
+            self.resp().notify();
         }
     }
 }

@@ -57,21 +57,16 @@ impl<'handler, 'scope, T: Send> EdgeHandler<'handler, 'scope, T> {
             self.scope.execute(move || {
                 callback(&mut app, &req, response);
             });
+
+            // and wait for it to notify us
+            Next::wait()
         } else {
             warn!("route not found for path {:?}", req.path());
             let mut res = self.holder.new_response();
             res.status(Status::NotFound);
             res.content_type("text/plain");
             res.send(format!("not found: {:?}", req.path()));
-        }
-
-        if self.holder.can_write() {
-            debug!("response done, return Next::write after callback");
             Next::write()
-        } else {
-            // otherwise we ask the Response to notify us, and wait
-            debug!("response not done, return Next::wait after callback");
-            Next::wait()
         }
     }
 
