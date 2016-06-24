@@ -22,19 +22,15 @@ use router::Router;
 pub struct EdgeHandler<'handler, 'scope: 'handler, T: 'scope + Send> {
     scope: &'handler Scope<'scope>,
     app: Option<T>,
-    router: &'handler Router<T>,
+    router: &'scope Router<T>,
     request: Option<Request>,
     is_head_request: bool,
     buffer: Option<Buffer>,
-    holder: ResponseHolder
+    holder: ResponseHolder<'scope>
 }
 
 impl<'handler, 'scope, T: Send> EdgeHandler<'handler, 'scope, T> {
-    pub fn new(scope: &'handler Scope<'scope>, app: T, router: &'handler Router<T>, handlebars: &'handler Handlebars, control: Control) -> EdgeHandler<'handler, 'scope, T> {
-        // we want to avoid having a Response<'a> because it cannot be moved to a thread
-        // and we know that the lifetime of handlebars outlives the lifetime of the handler by design
-        let handlebars = unsafe { ::std::mem::transmute(handlebars) };
-
+    pub fn new(scope: &'handler Scope<'scope>, app: T, router: &'scope Router<T>, handlebars: &'scope Handlebars, control: Control) -> EdgeHandler<'handler, 'scope, T> {
         EdgeHandler {
             scope: scope,
             app: Some(app),

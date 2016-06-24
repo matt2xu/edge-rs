@@ -21,7 +21,7 @@ use std::sync::{Arc};
 use buffer::Buffer;
 use crossbeam::sync::chase_lev::{deque, Steal, Stealer, Worker};
 
-pub struct Resp {
+pub struct Resp<'a> {
     status: Status,
     headers: Headers,
 
@@ -29,12 +29,12 @@ pub struct Resp {
     worker: Option<Worker<Buffer>>,
     stealer: Option<Stealer<Buffer>>,
 
-    handlebars: &'static Handlebars,
+    handlebars: &'a Handlebars,
     ctrl: Control
 }
 
-impl Resp {
-    pub fn new(handlebars: &'static Handlebars, ctrl: Control) -> Resp {
+impl<'a> Resp<'a> {
+    pub fn new(handlebars: &'a Handlebars, ctrl: Control) -> Resp<'a> {
         Resp {
             status: Status::Ok,
             headers: Headers::default(),
@@ -100,25 +100,25 @@ impl Resp {
 }
 
 /// This holds data for the response.
-pub struct ResponseHolder {
-    resp: Arc<UnsafeCell<Resp>>
+pub struct ResponseHolder<'a> {
+    resp: Arc<UnsafeCell<Resp<'a>>>
 }
 
-impl ResponseHolder {
+impl<'a> ResponseHolder<'a> {
 
-    pub fn new(handlebars: &'static Handlebars, control: Control) -> ResponseHolder {
+    pub fn new(handlebars: &'a Handlebars, control: Control) -> ResponseHolder<'a> {
         ResponseHolder {
             resp: Arc::new(UnsafeCell::new(Resp::new(handlebars, control)))
         }
     }
 
-    pub fn new_response(&mut self) -> Response {
+    pub fn new_response(&mut self) -> Response<'a> {
         Response {
             resp: self.resp.clone()
         }
     }
 
-    fn resp(&self) -> &Resp {
+    fn resp(&self) -> &Resp<'a> {
         unsafe { &*self.resp.get() }
     }
 
@@ -154,28 +154,28 @@ impl ResponseHolder {
 /// or deferred pending some computation (asynchronous mode).
 ///
 /// The response is sent when it is dropped.
-pub struct Response {
-    resp: Arc<UnsafeCell<Resp>>
+pub struct Response<'a> {
+    resp: Arc<UnsafeCell<Resp<'a>>>
 }
 
 // no worries, the response is always modified by only one thread at a time
-unsafe impl Send for Response {}
+unsafe impl<'a> Send for Response<'a> {}
 
-impl Drop for Response {
+impl<'a> Drop for Response<'a> {
     fn drop(&mut self) {
         self.resp().notify();
     }
 }
 
-impl Response {
+impl<'a> Response<'a> {
 
-    fn resp(&self) -> &Resp {
+    fn resp(&self) -> &Resp<'a> {
         unsafe {
             &*self.resp.get()
         }
     }
 
-    fn resp_mut(&self) -> &mut Resp {
+    fn resp_mut(&self) -> &mut Resp<'a> {
         unsafe {
             &mut *self.resp.get()
         }
@@ -331,7 +331,7 @@ impl Response {
     /// Moves to streaming mode.
     ///
     /// If no Content-Length is set, use Transfer-Encoding: chunked
-    pub fn stream(self) -> Streaming {
+    pub fn stream(self) -> Streaming<'a> {
         self.resp_mut().init_deque();
         Streaming {
             resp: self.resp.clone()
@@ -339,23 +339,23 @@ impl Response {
     }
 }
 
-pub struct Streaming {
-    resp: Arc<UnsafeCell<Resp>>
+pub struct Streaming<'a> {
+    resp: Arc<UnsafeCell<Resp<'a>>>
 }
 
 // no worries, the response is always modified by only one thread at a time
-unsafe impl Send for Streaming {}
+unsafe impl<'a> Send for Streaming<'a> {}
 
-impl Drop for Streaming {
+impl<'a> Drop for Streaming<'a> {
     fn drop(&mut self) {
         // append an empty buffer to indicate there is no more data left, and notify handler
         self.resp_mut().append(vec![]);
     }
 }
 
-impl Streaming {
+impl<'a> Streaming<'a> {
 
-    fn resp_mut(&self) -> &mut Resp {
+    fn resp_mut(&self) -> &mut Resp<'a> {
         unsafe {
             &mut *self.resp.get()
         }

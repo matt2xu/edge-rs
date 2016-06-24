@@ -7,6 +7,8 @@ use edge::{Edge, Cookie, Request, Response, Status};
 use edge::header::AccessControlAllowOrigin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
+use std::time::Duration;
 
 use std::collections::BTreeMap;
 use edge::value;
@@ -74,30 +76,20 @@ This is a list:
     }
 
     fn redirect(&mut self, _req: &Request, res: Response) {
-        use std::thread;
-        use std::time::Duration;
-
-        thread::spawn(|| {
-            println!("waiting 3 seconds");
-            thread::sleep(Duration::from_secs(3));
-            res.redirect("http://google.com", None)
-        });
+        println!("waiting 3 seconds");
+        thread::sleep(Duration::from_secs(3));
+        res.redirect("http://google.com", None)
     }
 
     fn streaming(&mut self, _req: &Request, res: Response) {
-        use std::thread;
-        use std::time::Duration;
+        let mut res = res.stream();
+        res.append("toto".as_bytes());
+        thread::sleep(Duration::from_secs(1));
 
-        thread::spawn(move || {
-            let mut res = res.stream();
-            res.append("toto".as_bytes());
-            thread::sleep(Duration::from_secs(1));
+        res.append("tata".as_bytes());
+        thread::sleep(Duration::from_secs(1));
 
-            res.append("tata".as_bytes());
-            thread::sleep(Duration::from_secs(1));
-
-            res.append("titi".as_bytes());
-        });
+        res.append("titi".as_bytes());
     }
 
 }

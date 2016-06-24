@@ -7,6 +7,8 @@ use edge::{Edge, Request, Response, Status, Client};
 use edge::value;
 
 use std::collections::BTreeMap;
+use std::thread;
+use std::time::Duration;
 
 #[derive(Default)]
 struct Fetch;
@@ -20,30 +22,25 @@ impl Fetch {
     fn fetch(&mut self, req: &Request, res: Response) {
         let url = req.query("url").unwrap_or("http://google.com").to_string();
 
-        use std::thread;
-        use std::time::Duration;
+        thread::sleep(Duration::from_secs(1));
 
-        thread::spawn(move || {
-            thread::sleep(Duration::from_secs(1));
+        let mut client = Client::new();
+        let mut stream = res.stream();
+        println!("url = {}", url);
 
-            let mut client = Client::new();
-            let mut stream = res.stream();
-            println!("url = {}", url);
+        let buffer = client.request(&url);
+        if client.status() == Status::Ok {
+            println!("got {} bytes", buffer.len());
+            stream.append(buffer);
+        }
 
-            let buffer = client.request(&url);
-            if client.status() == Status::Ok {
-                println!("got {} bytes", buffer.len());
-                stream.append(buffer);
-            }
+        thread::sleep(Duration::from_secs(1));
 
-            thread::sleep(Duration::from_secs(1));
-
-            let buffer = client.request(&url);
-            if client.status() == Status::Ok {
-                println!("got {} bytes", buffer.len());
-                stream.append(buffer);
-            }
-        });
+        let buffer = client.request(&url);
+        if client.status() == Status::Ok {
+            println!("got {} bytes", buffer.len());
+            stream.append(buffer);
+        }
     }
 
 }
