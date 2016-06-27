@@ -70,11 +70,6 @@ This is a list:
         res.end(Status::NoContent)
     }
 
-    fn files(&mut self, req: &Request, res: Response) {
-        let path = req.path()[1..].join("/");
-        res.send_file("web/".to_string() + &path)
-    }
-
     fn redirect(&mut self, _req: &Request, res: Response) {
         println!("waiting 3 seconds");
         thread::sleep(Duration::from_secs(3));
@@ -94,6 +89,11 @@ This is a list:
 
 }
 
+fn files(req: &Request, res: Response) {
+    let path = req.path()[1..].join("/");
+    res.send_file("web/".to_string() + &path)
+}
+
 fn main() {
     env_logger::init().unwrap();
 
@@ -101,12 +101,13 @@ fn main() {
     edge.get("/", MyApp::home);
     edge.get("/hello/:first_name/:last_name", MyApp::hello);
     edge.get("/settings", MyApp::settings);
-    edge.get("/static", MyApp::files);
 
     edge.get("/redirect", MyApp::redirect);
     edge.get("/streaming", MyApp::streaming);
 
     edge.post("/login", MyApp::login);
+
+    edge.get_static("/static", files);
 
     // registers view views/hello.hbs
     edge.register_template("hello");

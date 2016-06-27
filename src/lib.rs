@@ -211,9 +211,9 @@ mod response;
 pub use client::Client;
 pub use request::Request;
 pub use response::{Response, Streaming};
-pub use router::Callback;
+pub use router::{Callback};
 
-use router::Router;
+use router::{Router, Instance, Static};
 
 /// Structure for an Edge application.
 pub struct Edge<T> {
@@ -235,33 +235,38 @@ impl<T> Edge<T> {
     }
 
     /// Registers a callback for the given path for GET requests.
-    pub fn get(&mut self, path: &str, callback: Callback<T>) {
+    pub fn get(&mut self, path: &str, callback: Instance<T>) {
         self.insert(Get, path, callback);
     }
 
     /// Registers a callback for the given path for POST requests.
-    pub fn post(&mut self, path: &str, callback: Callback<T>) {
+    pub fn post(&mut self, path: &str, callback: Instance<T>) {
         self.insert(Post, path, callback);
     }
 
     /// Registers a callback for the given path for PUT requests.
-    pub fn put(&mut self, path: &str, callback: Callback<T>) {
+    pub fn put(&mut self, path: &str, callback: Instance<T>) {
         self.insert(Put, path, callback);
     }
 
     /// Registers a callback for the given path for DELETE requests.
-    pub fn delete(&mut self, path: &str, callback: Callback<T>) {
+    pub fn delete(&mut self, path: &str, callback: Instance<T>) {
         self.insert(Delete, path, callback);
     }
 
     /// Registers a callback for the given path for HEAD requests.
-    pub fn head(&mut self, path: &str, callback: Callback<T>) {
+    pub fn head(&mut self, path: &str, callback: Instance<T>) {
         self.insert(Head, path, callback);
     }
 
+    /// Registers a static callback for the given path for GET requests.
+    pub fn get_static(&mut self, path: &str, callback: Static) {
+        self.insert(Get, path, callback);
+    }
+
     /// Inserts the given callback for the given method and given route.
-    pub fn insert(&mut self, method: Method, path: &str, callback: Callback<T>) {
-        self.router.insert(method, path, callback)
+    pub fn insert<I: Into<Callback<T>>>(&mut self, method: Method, path: &str, callback: I) {
+        self.router.insert(method, path, callback.into())
     }
 
     // Registers a template with the given name.

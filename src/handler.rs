@@ -15,7 +15,7 @@ use scoped_pool::Scope;
 use buffer::Buffer;
 use request::{self, Request};
 use response::ResponseHolder;
-use router::Router;
+use router::{Callback, Router};
 
 /// a handler that lasts only the time of a request
 /// scope outlives handler
@@ -51,7 +51,10 @@ impl<'handler, 'scope, T: Send> EdgeHandler<'handler, 'scope, T> {
 
             // add job to scoped pool
             self.scope.execute(move || {
-                callback(&mut app, &req, response);
+                match callback {
+                    &Callback::Instance(f) => f(&mut app, &req, response),
+                    &Callback::Static(f) => f(&req, response)
+                }
             });
 
             // and wait for it to notify us

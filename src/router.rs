@@ -8,8 +8,14 @@ use response::Response;
 
 use url::Url;
 
+pub type Instance<T> = fn(&mut T, &Request, Response);
+pub type Static = fn(&Request, Response);
+
 /// Signature for a callback method
-pub type Callback<T> = fn(&mut T, &Request, Response);
+pub enum Callback<T> {
+    Instance(Instance<T>),
+    Static(Static)
+}
 
 /// A segment is either a fixed string, or a variable with a name
 #[derive(Debug, Clone)]
@@ -41,7 +47,7 @@ impl<T> Router<T> {
     }
 
     /// Finds the first route (if any) that matches the given path, and returns the associated callback.
-    pub fn find_callback(&self, req: &mut Request) -> Option<Callback<T>> {
+    pub fn find_callback(&self, req: &mut Request) -> Option<&Callback<T>> {
         info!("path: {:?}", req.path());
         if let Some(routes) = self.routes.get(req.method()) {
             let mut params = BTreeMap::new();
@@ -60,7 +66,7 @@ impl<T> Router<T> {
 
                 if it_route.next().is_none() {
                     request::set_params(req, params);
-                    return Some(*callback);
+                    return Some(callback);
                 }
 
                 params.clear();
@@ -78,6 +84,18 @@ impl<T> Router<T> {
         let route = path.parse().unwrap();
         info!("registered callback for {} (parsed as {:?})", path, route);
         self.routes.entry(method).or_insert(Vec::new()).push((route, callback));
+    }
+}
+
+impl<T> From<Instance<T>> for Callback<T> {
+    fn from(function: Instance<T>) -> Callback<T> {
+        Callback::Instance(function)
+    }
+}
+
+impl<T> From<Static> for Callback<T> {
+    fn from(function: Static) -> Callback<T> {
+        Callback::Static(function)
     }
 }
 
