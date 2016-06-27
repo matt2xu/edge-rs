@@ -1,3 +1,5 @@
+#![cfg_attr(feature = "middleware", feature(specialization))]
+
 extern crate env_logger;
 #[macro_use]
 extern crate log;
@@ -87,6 +89,13 @@ This is a list:
         res.append("titi".as_bytes());
     }
 
+}
+
+#[cfg(feature = "middleware")]
+impl edge::Middleware for MyApp {
+    fn before(&mut self, req: &mut Request) {
+        println!("hello middleware for request {:?}", req.path());
+    }
 }
 
 fn files(req: &Request, res: Response) {

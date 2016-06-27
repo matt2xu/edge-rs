@@ -164,6 +164,8 @@
 //! }
 //! ```
 
+#![cfg_attr(feature = "middleware", feature(specialization))]
+
 extern crate crossbeam;
 extern crate handlebars;
 extern crate hyper;
@@ -211,7 +213,7 @@ mod response;
 pub use client::Client;
 pub use request::Request;
 pub use response::{Response, Streaming};
-pub use router::{Callback};
+pub use router::{Callback, Middleware};
 
 use router::{Router, Instance, Static};
 
@@ -219,6 +221,20 @@ use router::{Router, Instance, Static};
 pub struct Edge<T> {
     router: Router<T>,
     handlebars: Handlebars
+}
+
+#[cfg(feature = "middleware")]
+/// Default middleware implementation (if using specialization)
+impl<T> Middleware for T {
+    default fn before(&mut self, _: &mut Request) {
+    }
+}
+
+#[cfg(not(feature = "middleware"))]
+/// Default middleware implementation (if using specialization)
+impl<T> Middleware for T {
+    fn before(&mut self, _: &mut Request) {
+    }
 }
 
 impl<T> Edge<T> {

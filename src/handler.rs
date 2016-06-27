@@ -15,7 +15,7 @@ use scoped_pool::Scope;
 use buffer::Buffer;
 use request::{self, Request};
 use response::ResponseHolder;
-use router::{Callback, Router};
+use router::{Callback, Middleware, Router};
 
 /// a handler that lasts only the time of a request
 /// scope outlives handler
@@ -29,7 +29,7 @@ pub struct EdgeHandler<'handler, 'scope: 'handler, T: 'scope + Send> {
     holder: ResponseHolder<'scope>
 }
 
-impl<'handler, 'scope, T: Send> EdgeHandler<'handler, 'scope, T> {
+impl<'handler, 'scope, T: Send + Middleware> EdgeHandler<'handler, 'scope, T> {
     pub fn new(scope: &'handler Scope<'scope>, app: T, router: &'scope Router<T>, handlebars: &'scope Handlebars, control: Control) -> EdgeHandler<'handler, 'scope, T> {
         EdgeHandler {
             scope: scope,
@@ -51,6 +51,8 @@ impl<'handler, 'scope, T: Send> EdgeHandler<'handler, 'scope, T> {
 
             // add job to scoped pool
             self.scope.execute(move || {
+                app.before(&mut req);
+
                 match callback {
                     &Callback::Instance(f) => f(&mut app, &req, response),
                     &Callback::Static(f) => f(&req, response)
@@ -81,7 +83,7 @@ impl<'handler, 'scope, T: Send> EdgeHandler<'handler, 'scope, T> {
 }
 
 /// Implements Handler for our EdgeHandler.
-impl<'handler, 'scope, T: Send> Handler<HttpStream> for EdgeHandler<'handler, 'scope, T> {
+impl<'handler, 'scope, T: Send + Middleware> Handler<HttpStream> for EdgeHandler<'handler, 'scope, T> {
     fn on_request(&mut self, req: HttpRequest) -> Next {
         debug!("on_request");
 

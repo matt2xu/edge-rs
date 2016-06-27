@@ -17,6 +17,14 @@ pub enum Callback<T> {
     Static(Static)
 }
 
+pub trait Middleware {
+    fn before(&mut self, &mut Request) {
+    }
+
+    fn after(&mut self, &mut Request) {
+    }
+}
+
 /// A segment is either a fixed string, or a variable with a name
 #[derive(Debug, Clone)]
 enum Segment {
