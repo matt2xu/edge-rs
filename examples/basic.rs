@@ -59,14 +59,11 @@ This is a list:
 
     fn login(&mut self, req: &Request, mut res: Response) {
         let form = req.form().unwrap();
-        match form.iter().find(|pair| pair.0 == "username").map(|pair| &pair.1) {
-            None => (),
-            Some(ref username) => {
-                let mut cookie = Cookie::new("name".to_owned(), username.to_string());
-                cookie.domain = Some("localhost".to_string());
-                cookie.httponly = true;
-                res.cookie(cookie);
-            }
+        if let Some(username) = form.get("username") {
+            let mut cookie = Cookie::new("name".to_string(), username.to_string());
+            cookie.domain = Some("localhost".to_string());
+            cookie.httponly = true;
+            res.cookie(cookie);
         }
 
         res.end(Status::NoContent)

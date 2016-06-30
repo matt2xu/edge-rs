@@ -10,12 +10,15 @@ use hyper::uri::RequestUri::{AbsolutePath, Star};
 use hyper::mime::{Mime, TopLevel, SubLevel};
 use hyper::server::Request as HttpRequest;
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::io::{Error, ErrorKind, Result};
-use std::result::Result as StdResult;
-use std::slice::Iter;
+use std::io::{Error as IoError, ErrorKind};
 
 use buffer::Buffer;
+
+use serde_json;
+use serde_json::value::Value as Json;
+use serde_json::error::Error as JsonError;
 
 use url::{ParseError, Url};
 
@@ -31,7 +34,7 @@ pub struct Request {
     body: Option<Buffer>
 }
 
-pub fn new(base_url: &Url, inner: HttpRequest) -> StdResult<Request, ParseError> {
+pub fn new(base_url: &Url, inner: HttpRequest) -> Result<Request, ParseError> {
     let url = match *inner.uri() {
         AbsolutePath(ref path) => Some(try!(base_url.join(path))),
         Star => None,
@@ -65,32 +68,47 @@ pub fn set_body(request: Option<&mut Request>, body: Option<Buffer>) {
 
 impl Request {
     /// Returns this request's body as a vector of bytes.
-    pub fn body(&self) -> Result<&[u8]> {
+    pub fn body(&self) -> Result<&[u8], IoError> {
         match self.body {
             Some(ref buffer) => Ok(buffer.as_ref()),
-            None => Err(Error::new(ErrorKind::UnexpectedEof, "empty body"))
+            None => Err(IoError::new(ErrorKind::UnexpectedEof, "empty body"))
         }
     }
 
     /// Returns an iterator over the cookies of this request.
-    pub fn cookies(&self) -> Iter<Cookie> {
+    pub fn cookies(&self) -> ::std::slice::Iter<Cookie> {
         self.headers().get::<CookieHeader>().map_or([].iter(),
             |&CookieHeader(ref cookies)| cookies.iter()
         )
     }
 
-    /// Reads the body of this request, parses it as an application/x-www-form-urlencoded format,
-    /// and returns it as a vector of (name, value) pairs.
-    pub fn form(&self) -> Result<Vec<(String, String)>> {
+    /// Parses the body of this request as an URL-encoded form.
+    ///
+    /// The Content-Type header must indicate ```application/x-www-form-urlencoded```.
+    /// Returns a (key, value) map of clone-on-write strings.
+    pub fn form<'a>(&'a self) -> Result<BTreeMap<Cow<'a, str>, Cow<'a, str>>, IoError> {
         let body = try!(self.body());
 
         match self.headers().get::<ContentType>() {
             Some(&ContentType(Mime(TopLevel::Application, SubLevel::WwwFormUrlEncoded, _))) => {
                 let parse = url::form_urlencoded::parse(body);
-                Ok(parse.into_owned().collect())
+                Ok(parse.collect())
             }
-            Some(_) => Err(Error::new(ErrorKind::InvalidInput, "invalid Content-Type, expected application/x-www-form-urlencoded")),
-            None => Err(Error::new(ErrorKind::InvalidInput, "missing Content-Type header"))
+            Some(_) => Err(IoError::new(ErrorKind::InvalidInput, "invalid Content-Type, expected application/x-www-form-urlencoded")),
+            None => Err(IoError::new(ErrorKind::InvalidInput, "missing Content-Type header"))
+        }
+    }
+
+    /// Parses the body of this request as JSON (indicated by ```application/json``` content type).
+    pub fn json(&self) -> Result<Json, JsonError> {
+        let body = try!(self.body());
+
+        match self.headers().get::<ContentType>() {
+            Some(&ContentType(Mime(TopLevel::Application, SubLevel::Json, _))) => {
+                serde_json::from_slice(body)
+            }
+            Some(_) => Err(JsonError::Io(IoError::new(ErrorKind::InvalidInput, "invalid Content-Type, expected application/json"))),
+            None => Err(JsonError::Io(IoError::new(ErrorKind::InvalidInput, "missing Content-Type header")))
         }
     }
 
