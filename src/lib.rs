@@ -1,106 +1,131 @@
-use std::cell::RefCell;
-use std::sync::{Arc, RwLock};
+use std::any::Any;
+use std::boxed::Box;
+use std::marker::PhantomData;
 
-struct Resp {
-    body: Vec<u8>,
-    locked: RwLock<Vec<u8>>
+/// provides a type safe interface
+/// guarantees T is same for all calls to register
+pub struct Router<T> {
+    inner: InnerRouter,
+    _marker: PhantomData<T>
 }
 
-impl Resp {
-    fn new() -> Resp {
-        Resp {
-            body: Vec::new(),
-            locked: RwLock::new(Vec::new())
+impl<T: Default + Any> Router<T> {
+    /// wraps the value returned by Default::default into a box
+    fn create() -> Box<Any> {
+        Box::new(T::default())
+    }
+
+    pub fn new() -> Router<T> {
+        Router {
+            inner: InnerRouter::new::<T>(),
+            _marker: PhantomData
         }
     }
 
-    fn send(&mut self, content: &[u8]) {
-        self.body.extend_from_slice(content);
-    }
-
-    fn send_lock(&self, content: &[u8]) {
-        self.locked.write().unwrap().extend_from_slice(content);
+    pub fn register(&mut self, callback: fn(&mut T)) {
+        self.inner.routes.push(Box::new(move |any| {
+            if let Some(app) = any.downcast_mut::<T>() {
+                callback(app);
+            }
+        }));
     }
 }
 
-struct Response {
-    inner: Arc<Resp>
+
+struct InnerRouter {
+    init: fn() -> Box<Any>,
+    routes: Vec<Box<Fn(&mut Any)>>
 }
 
-impl Response {
-    pub fn new() -> Response {
-        Response {
-            inner: Arc::new(Resp::new())
+impl InnerRouter {
+    fn new<T: Default + Any>() -> InnerRouter {
+        InnerRouter {
+            init: Router::<T>::create,
+            routes: Vec::new()
         }
     }
 
-    fn send(&mut self, content: &[u8]) {
-        if let Some(resp) = Arc::get_mut(&mut self.inner) {
-            // same thread, can borrow mutably
-            resp.send(content);
-            return;
+    pub fn test(&self) {
+        let mut app_box = (self.init)();
+        for route in &self.routes {
+            route(app_box.as_mut());
         }
-
-        // cloned
-        self.inner.send_lock(content);
     }
 }
 
-impl Clone for Response {
-    fn clone(&self) -> Response {
-        Response {
-            inner: self.inner.clone()
+pub struct App {
+    routers: Vec<InnerRouter>
+}
+
+impl App {
+    pub fn new() -> App {
+        App {
+            routers: Vec::new()
+        }
+    }
+
+    pub fn add_router<T>(&mut self, router: Router<T>) {
+        self.routers.push(router.inner);
+    }
+
+    pub fn test_routers(&self) {
+        for router in &self.routers {
+            router.test();
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Resp, Response};
-    use std::thread;
-    use std::time::Duration;
-    use std::sync::Arc;
 
-    fn callback(res: &mut Response) {
-        res.send(b"tata");
-    }
-
-    fn callback_async(res: &mut Response) {
-        let mut res = res.clone();
-        thread::spawn(move || {
-            println!("waiting for 1 second");
-            thread::sleep(Duration::from_secs(1));
-            println!("sending toto");
-            res.send(b"toto");
-
-            // normally invoked indirectly when res says ctrl.ready()
-            response_writable(&res.inner);
-        });
-        println!("after thread spawn");
-    }
+    use super::{App, Router};
 
     #[test]
-    fn test() {
-        let mut res = Response::new();
-        callback(&mut res);
-        assert!(Arc::get_mut(&mut res.inner).is_some());
+    fn test_app() {
+        #[derive(Default)]
+        struct MyApp {
+            counter: u32
+        }
 
-        //if let Some(resp) = Arc::get_mut(&mut res.inner) {
-            println!("content: {:?}", res.inner.body);
-        //}
+        impl MyApp {
+            fn handler(&mut self) {
+                println!("MyApp::handler");
+                self.counter += 1;
+                println!("MyApp::handler, counter = {}", self.counter);
+            }
+
+            fn handler2(&mut self) {
+                println!("MyApp::handler2");
+                self.counter += 1;
+                println!("MyApp::handler2, counter = {}", self.counter);
+            }
+        }
+
+        let mut app = App::new();
+        let mut router = Router::new();
+        router.register(MyApp::handler);
+        router.register(MyApp::handler2);
+        app.add_router(router);
+
+        #[derive(Default)]
+        struct MyApp2 {
+            empty: String
+        }
+
+        impl MyApp2 {
+            fn another(&mut self) {
+                println!("MyApp2::another empty = {}", self.empty);
+                self.empty.push_str("Hello, world!");
+                println!("MyApp2::another empty = {}", self.empty);
+            }
+        }
+
+
+        let mut router = Router::new();
+        router.register(MyApp2::another);
+        app.add_router(router);
+
+        app.test_routers();
     }
 
-    fn response_writable(resp: &Resp) {
-        println!("content: {:?}", *resp.locked.read().unwrap());
-    }
-
-    #[test]
-    fn test_async() {
-        let mut res = Response::new();
-        callback_async(&mut res);
-        assert!(Arc::get_mut(&mut res.inner).is_none());
-
-        println!("waiting for 3 seconds");
-        thread::sleep(Duration::from_secs(3));
-    }
 }
