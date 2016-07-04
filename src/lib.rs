@@ -164,8 +164,6 @@
 //! }
 //! ```
 
-#![cfg_attr(feature = "middleware", feature(specialization))]
-
 extern crate crossbeam;
 extern crate handlebars;
 extern crate hyper;
@@ -187,8 +185,6 @@ pub use serde_json::value as value;
 
 use handlebars::{Context, Handlebars, Helper, RenderContext, RenderError};
 
-use hyper::Method;
-use hyper::method::Method::{Delete, Get, Head, Post, Put};
 use hyper::net::HttpListener;
 use hyper::server::Server;
 
@@ -197,6 +193,8 @@ use pulldown_cmark::{Options, OPTION_ENABLE_TABLES, OPTION_ENABLE_FOOTNOTES};
 use pulldown_cmark::html;
 
 use scoped_pool::Pool;
+
+use url::Url;
 
 use std::fs::read_dir;
 use std::io::Result as IoResult;
@@ -213,76 +211,39 @@ mod response;
 pub use client::Client;
 pub use request::Request;
 pub use response::{Response, Streaming};
-pub use router::{Callback, Middleware};
-
-use router::{Router, Instance, Static};
+pub use router::{Router};
 
 /// Structure for an Edge application.
-pub struct Edge<T> {
-    router: Router<T>,
+pub struct Edge {
+    base_url: Url,
+    routers: Vec<router::RouterAny>,
     handlebars: Handlebars
 }
 
-#[cfg(feature = "middleware")]
-/// Default middleware implementation (if using specialization)
-impl<T> Middleware for T {
-    default fn before(&mut self, _: &mut Request) {
-    }
-}
-
-#[cfg(not(feature = "middleware"))]
-/// Default middleware implementation (if using specialization)
-impl<T> Middleware for T {
-    fn before(&mut self, _: &mut Request) {
-    }
-}
-
-impl<T> Edge<T> {
+impl Edge {
 
     /// Creates an Edge application using the given address and application.
-    pub fn new(addr: &str) -> Edge<T> {
+    pub fn new(addr: &str) -> Edge {
         let mut handlebars = Handlebars::new();
         init_handlebars(&mut handlebars).unwrap();
 
         Edge {
-            router: Router::new(addr),
+            base_url: Url::parse(&("http://".to_string() + addr)).unwrap(),
+            routers: Vec::new(),
             handlebars: handlebars
         }
     }
 
-    /// Registers a callback for the given path for GET requests.
-    pub fn get(&mut self, path: &str, callback: Instance<T>) {
-        self.insert(Get, path, callback);
+    /// Mounts the given router as the root path "/"
+    pub fn mount<T>(&mut self, router: Router<T>) {
+        self.routers.push(router::get_inner(router))
     }
 
-    /// Registers a callback for the given path for POST requests.
-    pub fn post(&mut self, path: &str, callback: Instance<T>) {
-        self.insert(Post, path, callback);
-    }
-
-    /// Registers a callback for the given path for PUT requests.
-    pub fn put(&mut self, path: &str, callback: Instance<T>) {
-        self.insert(Put, path, callback);
-    }
-
-    /// Registers a callback for the given path for DELETE requests.
-    pub fn delete(&mut self, path: &str, callback: Instance<T>) {
-        self.insert(Delete, path, callback);
-    }
-
-    /// Registers a callback for the given path for HEAD requests.
-    pub fn head(&mut self, path: &str, callback: Instance<T>) {
-        self.insert(Head, path, callback);
-    }
-
-    /// Registers a static callback for the given path for GET requests.
-    pub fn get_static(&mut self, path: &str, callback: Static) {
-        self.insert(Get, path, callback);
-    }
-
-    /// Inserts the given callback for the given method and given route.
-    pub fn insert<I: Into<Callback<T>>>(&mut self, method: Method, path: &str, callback: I) {
-        self.router.insert(method, path, callback.into())
+    /// Mounts the given router at the given path.
+    pub fn mount_at<T>(&mut self, mount: &str, router: Router<T>) {
+        let mut router = router::get_inner(router);
+        router.set_prefix(mount);
+        self.routers.push(router)
     }
 
     // Registers a template with the given name.
@@ -295,19 +256,15 @@ impl<T> Edge<T> {
         self.handlebars.register_template_file(name, &path).unwrap();
     }
 
-}
-
-/// Defines an impl that creates a new instance of `T` for each request using
-/// `Default::default`.
-impl<T: Default + Send> Edge<T> {
-
     /// Runs the server in one thread per cpu.
     ///
     /// Creates one instance of `T` per request by calling `Default::default`.
     /// This method blocks the current thread.
     pub fn start(&mut self) -> IoResult<()> {
+        assert!(!self.routers.is_empty(), "No router registered! Please mount at least one router");
+
         // get address and start listening
-        let addr = self.router.base_url.to_socket_addrs().unwrap().next().unwrap();
+        let addr = self.base_url.to_socket_addrs().unwrap().next().unwrap();
         let listener = HttpListener::bind(&addr).unwrap();
 
         // 50% threads for the pool, 50% for the listeners
@@ -317,50 +274,13 @@ impl<T: Default + Send> Edge<T> {
             crossbeam::scope(|scope| {
                 for i in 0..num_threads {
                     let listener = listener.try_clone().unwrap();
-                    let router = &self.router;
+                    let base_url = &self.base_url;
+                    let routers = &self.routers;
                     let handlebars = &self.handlebars;
                     scope.spawn(move || {
                         info!("thread {} listening on http://{}", i, addr);
                         Server::new(listener).handle(move |control| {
-                            let app = T::default();
-                            handler::EdgeHandler::new(pool_scope, app, &router, &handlebars, control)
-                        }).unwrap();
-                    });
-                }
-            });
-        });
-
-        Ok(())
-    }
-}
-
-/// Defines an impl that creates a new instance of `T` for each request
-/// by cloning an initial instance of `T`.
-impl<T: Clone + Send + Sync> Edge<T> {
-
-    /// Runs the server in one thread per cpu.
-    ///
-    /// Creates one instance of `T` per request by cloning `app`.
-    /// This method blocks the current thread.
-    pub fn start_with(&mut self, app: T) -> IoResult<()> {
-        // get address and start listening
-        let addr = self.router.base_url.to_socket_addrs().unwrap().next().unwrap();
-        let listener = HttpListener::bind(&addr).unwrap();
-
-        // 50% threads for the pool, 50% for the listeners
-        let num_threads = ::std::cmp::max(num_cpus::get() / 2, 1);
-        let pool = Pool::new(num_threads);
-        pool.scoped(|pool_scope| {
-            crossbeam::scope(|scope| {
-                for i in 0..num_threads {
-                    let listener = listener.try_clone().unwrap();
-                    let router = &self.router;
-                    let handlebars = &self.handlebars;
-                    let app = &app;
-                    scope.spawn(move || {
-                        info!("thread {} listening on http://{}", i, addr);
-                        Server::new(listener).handle(move |control| {
-                            handler::EdgeHandler::new(pool_scope, app.clone(), &router, &handlebars, control)
+                            handler::EdgeHandler::new(pool_scope, &base_url, &routers, &handlebars, control)
                         }).unwrap();
                     });
                 }

@@ -3,7 +3,7 @@ extern crate env_logger;
 extern crate log;
 extern crate edge;
 
-use edge::{Edge, Request, Response, Status, Client};
+use edge::{Edge, Router, Request, Response, Status, Client};
 use edge::value;
 
 use std::collections::BTreeMap;
@@ -11,12 +11,22 @@ use std::thread;
 use std::time::Duration;
 
 #[derive(Default)]
-struct Fetch;
-impl Fetch {
+struct Home;
+impl Home {
 
     fn home(&mut self, _req: &Request, mut res: Response) {
         res.content_type("text/html");
         res.render("fetch", BTreeMap::<String, value::Value>::new())
+    }
+
+}
+
+#[derive(Default)]
+struct Fetch;
+impl Fetch {
+
+    fn home(&mut self, _req: &Request, res: Response) {
+        res.redirect("/", None)
     }
 
     fn fetch(&mut self, req: &Request, res: Response) {
@@ -49,8 +59,15 @@ fn main() {
     env_logger::init().unwrap();
 
     let mut edge = Edge::new("0.0.0.0:3000");
-    edge.get("/", Fetch::home);
-    edge.get("/fetch", Fetch::fetch);
+    let mut router = Router::new();
+    router.get("/", Home::home);
+    edge.mount(router);
+
+    let mut router = Router::new();
+    router.get("/", Fetch::home);
+    router.get("/fetch", Fetch::fetch);
+    edge.mount_at("/api/v1", router);
+
     edge.register_template("fetch");
     edge.start().unwrap();
 }

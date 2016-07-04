@@ -4,7 +4,7 @@ extern crate log;
 extern crate edge;
 extern crate rusqlite;
 
-use edge::{Edge, Request, Response, Status};
+use edge::{Edge, Router, Request, Response, Status};
 use edge::value;
 
 use rusqlite::Connection;
@@ -81,7 +81,9 @@ fn main() {
     check_db().unwrap();
 
     let mut edge = Edge::new("0.0.0.0:3000");
-    edge.get("/:user_id", Db::home);
+    let mut router = Router::new();
+    router.get("/:user_id", Db::home);
+    edge.mount(router);
     edge.register_template("db");
     edge.start().unwrap();
 }

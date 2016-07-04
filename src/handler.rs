@@ -12,29 +12,31 @@ use hyper::status::StatusCode as Status;
 
 use scoped_pool::Scope;
 
+use url::Url;
+
 use buffer::Buffer;
 use request::{self, Request};
 use response::ResponseHolder;
-use router::{Callback, Middleware, Router};
+use router::{Callback, RouterAny};
 
 /// a handler that lasts only the time of a request
 /// scope outlives handler
-pub struct EdgeHandler<'handler, 'scope: 'handler, T: 'scope + Send> {
+pub struct EdgeHandler<'handler, 'scope: 'handler> {
     scope: &'handler Scope<'scope>,
-    app: Option<T>,
-    router: &'scope Router<T>,
+    base_url: &'handler Url,
+    routers: &'scope [RouterAny],
     request: Option<Request>,
     is_head_request: bool,
     buffer: Option<Buffer>,
     holder: ResponseHolder<'scope>
 }
 
-impl<'handler, 'scope, T: Send + Middleware> EdgeHandler<'handler, 'scope, T> {
-    pub fn new(scope: &'handler Scope<'scope>, app: T, router: &'scope Router<T>, handlebars: &'scope Handlebars, control: Control) -> EdgeHandler<'handler, 'scope, T> {
+impl<'handler, 'scope> EdgeHandler<'handler, 'scope> {
+    pub fn new(scope: &'handler Scope<'scope>, base_url: &'handler Url, routers: &'scope [RouterAny], handlebars: &'scope Handlebars, control: Control) -> EdgeHandler<'handler, 'scope> {
         EdgeHandler {
             scope: scope,
-            app: Some(app),
-            router: router,
+            base_url: base_url,
+            routers: routers,
             request: None,
             is_head_request: false,
             buffer: None,
@@ -45,28 +47,36 @@ impl<'handler, 'scope, T: Send + Middleware> EdgeHandler<'handler, 'scope, T> {
     fn callback(&mut self) -> Next {
         let mut req = self.request.take().unwrap();
 
-        if let Some(callback) = self.router.find_callback(&mut req) {
-            let mut app = self.app.take().unwrap();
+        let result = self.routers.iter().filter_map(|router|
+            if let Some(callback) = router.find_callback(&mut req) {
+                Some((router, callback))
+            } else {
+                None
+            }
+        ).next();
+
+        if let Some((router, callback)) = result {
+            let mut boxed_app = router.new_instance();
             let response = self.holder.new_response();
 
             // add job to scoped pool
             self.scope.execute(move || {
-                app.before(&mut req);
+                router.run_middleware(boxed_app.as_mut(), &mut req);
 
-                match callback {
-                    &Callback::Instance(f) => f(&mut app, &req, response),
-                    &Callback::Static(f) => f(&req, response)
+                match *callback {
+                    Callback::Instance(ref f) => f(boxed_app.as_mut(), &req, response),
+                    Callback::Static(ref f) => f(&req, response)
                 }
             });
 
             // and wait for it to notify us
             Next::wait()
         } else {
-            warn!("route not found for path {:?}", req.path());
+            //warn!("route not found for path {:?}", req.path());
             let mut res = self.holder.new_response();
             res.status(Status::NotFound);
             res.content_type("text/plain");
-            res.send(format!("not found: {:?}", req.path()));
+            //res.send(format!("not found: {:?}", req.path()));
             Next::write()
         }
     }
@@ -83,11 +93,11 @@ impl<'handler, 'scope, T: Send + Middleware> EdgeHandler<'handler, 'scope, T> {
 }
 
 /// Implements Handler for our EdgeHandler.
-impl<'handler, 'scope, T: Send + Middleware> Handler<HttpStream> for EdgeHandler<'handler, 'scope, T> {
+impl<'handler, 'scope> Handler<HttpStream> for EdgeHandler<'handler, 'scope> {
     fn on_request(&mut self, req: HttpRequest) -> Next {
         debug!("on_request");
 
-        match request::new(&self.router.base_url, req) {
+        match request::new(&self.base_url, req) {
             Ok(req) => {
                 let result = check_request(&req, &mut self.buffer);
                 self.is_head_request = *req.method() == Head;

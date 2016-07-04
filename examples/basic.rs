@@ -5,7 +5,10 @@ extern crate env_logger;
 extern crate log;
 extern crate edge;
 
-use edge::{Edge, Cookie, Request, Response, Status};
+#[macro_use]
+extern crate lazy_static;
+
+use edge::{Edge, Router, Cookie, Request, Response, Status};
 use edge::header::AccessControlAllowOrigin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -15,9 +18,21 @@ use std::time::Duration;
 use std::collections::BTreeMap;
 use edge::value;
 
-#[derive(Clone, Default)]
 struct MyApp {
     counter: Arc<AtomicUsize>
+}
+
+lazy_static! {
+    static ref COUNTER: Arc<AtomicUsize> = Default::default();
+}
+
+impl Default for MyApp {
+    fn default() -> MyApp {
+        debug!("MyApp::default");
+        MyApp {
+            counter: COUNTER.clone()
+        }
+    }
 }
 
 impl MyApp {
@@ -88,8 +103,7 @@ This is a list:
 
 }
 
-#[cfg(feature = "middleware")]
-impl edge::Middleware for MyApp {
+impl MyApp {
     fn before(&mut self, req: &mut Request) {
         println!("hello middleware for request {:?}", req.path());
     }
@@ -104,19 +118,24 @@ fn main() {
     env_logger::init().unwrap();
 
     let mut edge = Edge::new("0.0.0.0:3000");
-    edge.get("/", MyApp::home);
-    edge.get("/hello/:first_name/:last_name", MyApp::hello);
-    edge.get("/settings", MyApp::settings);
+    let mut router = Router::new();
+    router.get("/", MyApp::home);
+    router.get("/hello/:first_name/:last_name", MyApp::hello);
+    router.get("/settings", MyApp::settings);
 
-    edge.get("/redirect", MyApp::redirect);
-    edge.get("/streaming", MyApp::streaming);
+    router.get("/redirect", MyApp::redirect);
+    router.get("/streaming", MyApp::streaming);
 
-    edge.post("/login", MyApp::login);
+    router.post("/login", MyApp::login);
 
-    edge.get_static("/static", files);
+    router.get_static("/static", files);
+
+    // registers middleware
+    router.add_middleware(MyApp::before);
 
     // registers view views/hello.hbs
     edge.register_template("hello");
 
-    edge.start_with(MyApp::default()).unwrap();
+    edge.mount(router);
+    edge.start().unwrap();
 }

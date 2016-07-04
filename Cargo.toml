@@ -33,7 +33,4 @@ features = ["cookie"]
 [dev-dependencies]
 env_logger = "0.3"
 rusqlite = "0.7"
-
-[features]
-default = []
-middleware = []
+lazy_static = "0.1"
