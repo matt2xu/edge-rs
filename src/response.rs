@@ -10,7 +10,8 @@ use serde::ser::Serialize as ToJson;
 
 use std::borrow::Cow;
 use std::cell::UnsafeCell;
-use std::fmt::Debug;
+use std::error::Error;
+use std::fmt;
 use std::fs::File;
 use std::io::{ErrorKind, Read};
 use std::path::Path;
@@ -69,7 +70,7 @@ impl<'a> Resp<'a> {
         self.headers.set(header);
     }
 
-    fn header_raw<K: Into<Cow<'static, str>> + Debug>(&mut self, name: K, value: Vec<Vec<u8>>) {
+    fn header_raw<K: Into<Cow<'static, str>> + fmt::Debug>(&mut self, name: K, value: Vec<Vec<u8>>) {
         self.headers.set_raw(name, value);
     }
 
@@ -165,6 +166,43 @@ impl<'a> Drop for Response<'a> {
     }
 }
 
+#[derive(Debug)]
+pub struct HandlerError<'a> {
+    status: Status,
+    message: Cow<'a, str>
+}
+
+impl<'a> HandlerError<'a> {
+    fn new(status: Status, message: Cow<'a, str>) -> HandlerError<'a> {
+        HandlerError {
+            status: status,
+            message: message
+        }
+    }
+}
+
+impl<'a> fmt::Display for HandlerError<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl<'a> Error for HandlerError<'a> {
+    fn description(&self) -> &str {
+        &self.message
+    }
+
+    fn cause(&self) -> Option<&Error> {
+        None
+    }
+}
+
+impl<'a> From<(Status, String)> for HandlerError<'a> {
+    fn from(pair: (Status, String)) -> HandlerError<'a> {
+        HandlerError::new(pair.0, Cow::Owned(pair.1))
+    }
+}
+
 impl<'a> Response<'a> {
 
     fn resp(&self) -> &Resp<'a> {
@@ -212,9 +250,26 @@ impl<'a> Response<'a> {
     }
 
     /// Sets the given header with raw strings.
-    pub fn header_raw<K: Into<Cow<'static, str>> + Debug, V: Into<Vec<u8>>>(&mut self, name: K, value: V) -> &mut Self {
+    pub fn header_raw<K: Into<Cow<'static, str>> + fmt::Debug, V: Into<Vec<u8>>>(&mut self, name: K, value: V) -> &mut Self {
         self.resp_mut().header_raw(name, vec![value.into()]);
         self
+    }
+
+    /// Calls the given callback to get a result.
+    ///
+    /// If the result is Ok, returns the given status with no body.
+    /// Otherwise, converts the error into a handler error, and returns the status with the error message
+    /// as the body.
+    pub fn handle<E, F>(mut self, callback: F) where F: Fn(&mut Response) -> Result<Status, E>, E: Into<HandlerError<'a>> {
+        match callback(&mut self) {
+            Ok(status) => self.end(status),
+            Err(something) => {
+                let error = something.into();
+                self.content_type("text/plain");
+                self.status(error.status);
+                self.send(error.description());
+            }
+        }
     }
 
     /// Sets the Location header.

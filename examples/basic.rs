@@ -10,6 +10,7 @@ extern crate lazy_static;
 
 use edge::{json, Edge, Router, Cookie, Request, Response, Status};
 use edge::header::AccessControlAllowOrigin;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
@@ -71,16 +72,22 @@ This is a list:
         res.send("<html><head><title>Settings</title></head><body><h1>Settings</h1></body></html>")
     }
 
-    fn login(&mut self, req: &Request, mut res: Response) {
-        let form = req.form().unwrap();
-        if let Some(username) = form.get("username") {
-            let mut cookie = Cookie::new("name".to_string(), username.to_string());
-            cookie.domain = Some("localhost".to_string());
-            cookie.httponly = true;
-            res.cookie(cookie);
-        }
+    fn login(&mut self, req: &Request, res: Response) {
+        res.handle(|res| {
+            let form = try!(req.form().map_err(|e| (Status::BadRequest, e.to_string())));
+            if let Some(username) = form.get("username") {
+                if username == "error" {
+                    return Err((Status::BadRequest, "bad user name: error".to_string()));
+                }
 
-        res.end(Status::NoContent)
+                let mut cookie = Cookie::new("name".to_string(), username.to_string());
+                cookie.domain = Some("localhost".to_string());
+                cookie.httponly = true;
+                res.cookie(cookie);
+            }
+
+            Ok(Status::NoContent)
+        });
     }
 
     fn redirect(&mut self, _req: &Request, res: Response) {
