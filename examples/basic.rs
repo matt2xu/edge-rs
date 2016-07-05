@@ -136,6 +136,6 @@ fn main() {
     // registers view views/hello.hbs
     edge.register_template("hello");
 
-    edge.mount(router);
+    edge.mount("/", router);
     edge.start().unwrap();
 }

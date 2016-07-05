@@ -16,10 +16,19 @@ pub type TypedMiddleware<T> = fn(&mut T, &mut Request);
 pub type Static = fn(&Request, Response);
 
 /// A segment is either a fixed string, or a variable with a name
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum Segment {
     Fixed(String),
     Variable(String)
+}
+
+impl Segment {
+    fn is_empty(&self) -> bool {
+        match self {
+            &Segment::Fixed(ref fixed) if fixed.len() == 0 => true,
+            _ => false
+        }
+    }
 }
 
 /// A route is an absolute URL pattern with a leading slash, and segments separated by slashes.
@@ -30,6 +39,7 @@ pub struct Route {
     callback: Callback
 }
 
+/// Returns a vector of segments from the given string.
 fn get_segments(from: &str) -> Result<Vec<Segment>, &str> {
     if from.len() == 0 {
         return Err("route must not be empty");
@@ -39,7 +49,7 @@ fn get_segments(from: &str) -> Result<Vec<Segment>, &str> {
     }
 
     let stripped = &from[1..];
-    Ok(stripped.split('/').map(|segment| if segment.len() > 0 && &segment[0..1] == ":" {
+    Ok(stripped.split('/').map(|segment| if segment.len() > 0 && segment.as_bytes()[0] == b':' {
             Segment::Variable(segment[1..].to_string())
         } else {
             Segment::Fixed(segment.to_string())
@@ -189,9 +199,9 @@ impl RouterAny {
 
     /// Finds the first route (if any) that matches the given path, and returns the associated callback.
     pub fn find_callback(&self, req: &mut Request) -> Option<&Callback> {
-        info!("path: {:?}", req.path());
-
-        if !self.match_prefix(req.path()) {
+        if self.match_prefix(req.path()) {
+            debug!("{} {:?} matches prefix {:?}", req.method(), req.path(), self.prefix);
+        } else {
             debug!("{} {:?} does not match prefix {:?}, skipping", req.method(), req.path(), self.prefix);
             return None;
         }
@@ -253,6 +263,9 @@ impl RouterAny {
     }
 
     pub fn set_prefix(&mut self, prefix: &str) {
-        self.prefix = get_segments(prefix).unwrap();
+        let segments = get_segments(prefix).unwrap();
+        if !(segments.len() == 1 && segments[0].is_empty()) {
+            self.prefix = segments;
+        }
     }
 }

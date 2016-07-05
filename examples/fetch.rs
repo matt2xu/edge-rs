@@ -59,14 +59,15 @@ fn main() {
     env_logger::init().unwrap();
 
     let mut edge = Edge::new("0.0.0.0:3000");
+
     let mut router = Router::new();
     router.get("/", Home::home);
-    edge.mount(router);
+    edge.mount("/", router);
 
     let mut router = Router::new();
     router.get("/", Fetch::home);
     router.get("/fetch", Fetch::fetch);
-    edge.mount_at("/api/v1", router);
+    edge.mount("/api/v1", router);
 
     edge.register_template("fetch");
     edge.start().unwrap();

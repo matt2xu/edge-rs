@@ -234,13 +234,10 @@ impl Edge {
         }
     }
 
-    /// Mounts the given router as the root path "/"
-    pub fn mount<T>(&mut self, router: Router<T>) {
-        self.routers.push(router::get_inner(router))
-    }
-
     /// Mounts the given router at the given path.
-    pub fn mount_at<T>(&mut self, mount: &str, router: Router<T>) {
+    ///
+    /// Use "/" to mount the router at the root.
+    pub fn mount<T>(&mut self, mount: &str, router: Router<T>) {
         let mut router = router::get_inner(router);
         router.set_prefix(mount);
         self.routers.push(router)
