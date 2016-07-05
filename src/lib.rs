@@ -211,7 +211,7 @@ mod response;
 
 pub use client::Client;
 pub use request::Request;
-pub use response::{Response, Streaming};
+pub use response::{Response, Streaming, HandlerError};
 pub use router::{Router};
 
 /// Structure for an Edge application.
