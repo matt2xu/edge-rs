@@ -8,7 +8,7 @@ extern crate edge;
 #[macro_use]
 extern crate lazy_static;
 
-use edge::{Edge, Router, Cookie, Request, Response, Status};
+use edge::{json, Edge, Router, Cookie, Request, Response, Status};
 use edge::header::AccessControlAllowOrigin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -16,7 +16,6 @@ use std::thread;
 use std::time::Duration;
 
 use std::collections::BTreeMap;
-use edge::value;
 
 struct MyApp {
     counter: Arc<AtomicUsize>
@@ -49,10 +48,10 @@ impl MyApp {
         let last_name = req.param("last_name").unwrap_or("Doe");
 
         let mut data = BTreeMap::new();
-        data.insert("first_name", value::to_value(first_name));
-        data.insert("last_name", value::to_value(last_name));
-        data.insert("counter", value::to_value(&cnt));
-        data.insert("content", value::to_value(r#"## Contents
+        data.insert("first_name", json::to_value(first_name));
+        data.insert("last_name", json::to_value(last_name));
+        data.insert("counter", json::to_value(&cnt));
+        data.insert("content", json::to_value(r#"## Contents
 This is a list:
 
 - item 1

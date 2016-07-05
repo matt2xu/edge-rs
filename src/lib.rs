@@ -171,17 +171,18 @@ extern crate num_cpus;
 extern crate pulldown_cmark;
 extern crate scoped_pool;
 extern crate serde;
-extern crate serde_json;
 extern crate url;
 
 #[macro_use]
 extern crate log;
+pub extern crate serde_json;
 
 pub use hyper::header as header;
 pub use header::CookiePair as Cookie;
 pub use hyper::status::StatusCode as Status;
 
-pub use serde_json::value as value;
+/// serde_json crate
+pub use serde_json as json;
 
 use handlebars::{Context, Handlebars, Helper, RenderContext, RenderError};
 

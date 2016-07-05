@@ -8,8 +8,6 @@ use hyper::mime::{Mime, TopLevel, SubLevel, Attr, Value};
 use handlebars::Handlebars;
 use serde::ser::Serialize as ToJson;
 
-pub use serde_json::value as value;
-
 use std::borrow::Cow;
 use std::cell::UnsafeCell;
 use std::fmt::Debug;

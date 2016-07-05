@@ -3,8 +3,7 @@ extern crate env_logger;
 extern crate log;
 extern crate edge;
 
-use edge::{Edge, Router, Request, Response, Status, Client};
-use edge::value;
+use edge::{json, Edge, Router, Request, Response, Status, Client};
 
 use std::collections::BTreeMap;
 use std::thread;
@@ -16,7 +15,7 @@ impl Home {
 
     fn home(&mut self, _req: &Request, mut res: Response) {
         res.content_type("text/html");
-        res.render("fetch", BTreeMap::<String, value::Value>::new())
+        res.render("fetch", BTreeMap::<String, json::Value>::new())
     }
 
 }

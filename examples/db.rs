@@ -4,8 +4,7 @@ extern crate log;
 extern crate edge;
 extern crate rusqlite;
 
-use edge::{Edge, Router, Request, Response, Status};
-use edge::value;
+use edge::{json, Edge, Router, Request, Response, Status};
 
 use rusqlite::Connection;
 use rusqlite::Error;
@@ -42,8 +41,8 @@ impl Db {
         match result {
             Ok(user) => {
                 let mut data = BTreeMap::new();
-                data.insert("id", value::to_value(&user.id));
-                data.insert("name", value::to_value(&user.name));
+                data.insert("id", json::to_value(&user.id));
+                data.insert("name", json::to_value(&user.name));
                 res.render("db", data)
             }
             Err(Error::QueryReturnedNoRows) => {
@@ -83,7 +82,7 @@ fn main() {
     let mut edge = Edge::new("0.0.0.0:3000");
     let mut router = Router::new();
     router.get("/:user_id", Db::home);
-    edge.mount(router);
+    edge.mount("/", router);
     edge.register_template("db");
     edge.start().unwrap();
 }

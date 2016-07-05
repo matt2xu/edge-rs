@@ -16,9 +16,7 @@ use std::io::{Error as IoError, ErrorKind};
 
 use buffer::Buffer;
 
-use serde_json;
-use serde_json::value::Value as Json;
-use serde_json::error::Error as JsonError;
+use serde_json as json;
 
 use url::{ParseError, Url};
 
@@ -100,15 +98,15 @@ impl Request {
     }
 
     /// Parses the body of this request as JSON (indicated by ```application/json``` content type).
-    pub fn json(&self) -> Result<Json, JsonError> {
+    pub fn json(&self) -> Result<json::Value, json::Error> {
         let body = try!(self.body());
 
         match self.headers().get::<ContentType>() {
             Some(&ContentType(Mime(TopLevel::Application, SubLevel::Json, _))) => {
-                serde_json::from_slice(body)
+                json::from_slice(body)
             }
-            Some(_) => Err(JsonError::Io(IoError::new(ErrorKind::InvalidInput, "invalid Content-Type, expected application/json"))),
-            None => Err(JsonError::Io(IoError::new(ErrorKind::InvalidInput, "missing Content-Type header")))
+            Some(_) => Err(json::Error::Io(IoError::new(ErrorKind::InvalidInput, "invalid Content-Type, expected application/json"))),
+            None => Err(json::Error::Io(IoError::new(ErrorKind::InvalidInput, "missing Content-Type header")))
         }
     }
 
