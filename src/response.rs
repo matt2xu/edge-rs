@@ -169,11 +169,11 @@ impl<'a> Drop for Response<'a> {
 #[derive(Debug)]
 pub struct HandlerError<'a> {
     status: Status,
-    message: Cow<'a, str>
+    message: Option<Cow<'a, str>>
 }
 
 impl<'a> HandlerError<'a> {
-    fn new(status: Status, message: Cow<'a, str>) -> HandlerError<'a> {
+    fn new(status: Status, message: Option<Cow<'a, str>>) -> HandlerError<'a> {
         HandlerError {
             status: status,
             message: message
@@ -183,13 +183,16 @@ impl<'a> HandlerError<'a> {
 
 impl<'a> fmt::Display for HandlerError<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.message)
+        self.description().fmt(f)
     }
 }
 
 impl<'a> Error for HandlerError<'a> {
     fn description(&self) -> &str {
-        &self.message
+        match self.message {
+            None => "<no description available>",
+            Some(ref message) => &message
+        }
     }
 
     fn cause(&self) -> Option<&Error> {
@@ -197,9 +200,21 @@ impl<'a> Error for HandlerError<'a> {
     }
 }
 
+impl<'a> From<Status> for HandlerError<'a> {
+    fn from(status: Status) -> HandlerError<'a> {
+        HandlerError::new(status, None)
+    }
+}
+
+impl<'a> From<(Status, &'a str)> for HandlerError<'a> {
+    fn from(pair: (Status, &'a str)) -> HandlerError<'a> {
+        HandlerError::new(pair.0, Some(Cow::Borrowed(pair.1)))
+    }
+}
+
 impl<'a> From<(Status, String)> for HandlerError<'a> {
     fn from(pair: (Status, String)) -> HandlerError<'a> {
-        HandlerError::new(pair.0, Cow::Owned(pair.1))
+        HandlerError::new(pair.0, Some(Cow::Owned(pair.1)))
     }
 }
 
@@ -260,14 +275,18 @@ impl<'a> Response<'a> {
     /// If the result is Ok, returns the given status with no body.
     /// Otherwise, converts the error into a handler error, and returns the status with the error message
     /// as the body.
-    pub fn handle<E, F>(mut self, callback: F) where F: Fn(&mut Response) -> Result<Status, E>, E: Into<HandlerError<'a>> {
+    pub fn handle<F>(mut self, mut callback: F) where F: FnMut(&mut Response) -> Result<Status, HandlerError<'a>> {
         match callback(&mut self) {
             Ok(status) => self.end(status),
-            Err(something) => {
-                let error = something.into();
+            Err(error) => {
                 self.content_type("text/plain");
-                self.status(error.status);
-                self.send(error.description());
+                match error.message {
+                    None => self.end(error.status),
+                    Some(message) => {
+                        self.status(error.status);
+                        self.send(&*message);
+                    }
+                }
             }
         }
     }

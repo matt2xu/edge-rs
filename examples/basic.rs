@@ -76,8 +76,10 @@ This is a list:
         res.handle(|res| {
             let form = try!(req.form().map_err(|e| (Status::BadRequest, e.to_string())));
             if let Some(username) = form.get("username") {
-                if username == "error" {
-                    return Err((Status::BadRequest, "bad user name: error".to_string()));
+                if username == "error with message" {
+                    try!(Err((Status::BadRequest, "bad user name: error")));
+                } else if username == "error no message" {
+                    try!(Err(Status::BadRequest));
                 }
 
                 let mut cookie = Cookie::new("name".to_string(), username.to_string());
