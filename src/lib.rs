@@ -75,10 +75,60 @@ impl App {
     }
 }
 
+pub struct Response {
+    status: u32
+}
+
+impl Response {
+    pub fn new() -> Response {
+        Response {
+            status: 500
+        }
+    }
+
+    pub fn status(&mut self, status: u32) {
+        println!("status was {}, set to {}", self.status, status);
+        self.status = status;
+    }
+}
+
+pub struct Stream;
+
+impl Stream {
+    pub fn write<I: AsRef<[u8]>>(&mut self, bytes: I) {
+        println!("bytes: {:?}", bytes.as_ref());
+    }
+}
+
+enum HandlerResult<T> {
+    End(u32),
+    Streaming(Box<Fn(&mut T, &mut Stream)>)
+}
+
+impl<T> HandlerResult<T> {
+    pub fn streaming(closure: Box<Fn(&mut T, &mut Stream)>) -> HandlerResult<T> {
+        HandlerResult::Streaming(closure)
+    }
+}
+
+impl<T> From<Box<Fn(&mut T, &mut Stream)>> for HandlerResult<T> {
+    fn from(closure: Box<Fn(&mut T, &mut Stream)>) -> HandlerResult<T> {
+        HandlerResult::Streaming(closure)
+    }
+}
+
+impl<T> From<u32> for HandlerResult<T> {
+    fn from(status: u32) -> HandlerResult<T> {
+        HandlerResult::End(status)
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
-    use super::{App, Router};
+    use super::{App, HandlerResult, Router, Response, Stream};
+
+    use std::boxed::Box;
 
     #[test]
     fn test_app() {
@@ -88,6 +138,18 @@ mod tests {
         }
 
         impl MyApp {
+            fn new_handler(&mut self, res: &mut Response) -> Option<HandlerResult<Self>> {
+                res.status(200);
+                Some(HandlerResult::streaming(Box::new(|this, stream| {
+                    println!("counter = {}", this.counter);
+                    stream.write("48");
+                })))
+            }
+
+            fn new_handler2(&mut self) -> Option<HandlerResult<Self>> {
+                Some(200.into())
+            }
+
             fn handler(&mut self) {
                 println!("MyApp::handler");
                 self.counter += 1;
@@ -102,6 +164,17 @@ mod tests {
         }
 
         let mut app = App::new();
+
+        let mut my_app = MyApp::default();
+        let mut response = Response::new();
+        let result = my_app.new_handler(&mut response);
+        if let Some(res) = result {
+            if let HandlerResult::Streaming(closure) = res.into() {
+                let mut stream = Stream;
+                closure(&mut my_app, &mut stream);
+            }
+        }
+
         let mut router = Router::new();
         router.register(MyApp::handler);
         router.register(MyApp::handler2);
