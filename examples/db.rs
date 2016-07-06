@@ -5,6 +5,7 @@ extern crate edge;
 extern crate rusqlite;
 
 use edge::{json, Edge, Router, Request, Response, Status};
+use edge::json::value::ToJson;
 
 use rusqlite::Connection;
 use rusqlite::Error;
@@ -22,38 +23,31 @@ struct User {
 struct Db;
 impl Db {
 
-    fn home(&mut self, req: &Request, mut res: Response) {
-        let mut user_id = req.param("user_id").unwrap().to_string();
-        user_id.trim();
+    fn home(&mut self, req: &Request, res: Response) {
+        res.handle(|_| {
+            let mut user_id = req.param("user_id").unwrap().to_string();
+            user_id.trim();
 
-        if user_id.len() == 0 {
-            user_id = "1".to_string();
-        }
+            if user_id.len() == 0 {
+                user_id = "1".to_string();
+            }
 
-        let connection = Connection::open("db/demo.db").unwrap();
-        let result = connection.query_row("SELECT * FROM users WHERE user_id = ?", &[&user_id], |row|
-            User {
-                id: row.get(0),
-                name: row.get(1)
-            }
-        );
+            let connection = Connection::open("db/demo.db").unwrap();
+            let user = try!(connection.query_row("SELECT * FROM users WHERE user_id = ?", &[&user_id], |row|
+                User {
+                    id: row.get(0),
+                    name: row.get(1)
+                }
+            ).map_err(|e| (Status::InternalServerError, match e {
+                Error::QueryReturnedNoRows => format!("no user known with id {}", user_id),
+                _ => format!("error when requesting user: {}", e)
+            })));
 
-        match result {
-            Ok(user) => {
-                let mut data = BTreeMap::new();
-                data.insert("id", json::to_value(&user.id));
-                data.insert("name", json::to_value(&user.name));
-                res.render("db", data)
-            }
-            Err(Error::QueryReturnedNoRows) => {
-                res.status(Status::InternalServerError);
-                res.send(format!("no user known with id {}", user_id))
-            }
-            Err(e) => {
-                res.status(Status::InternalServerError);
-                res.send(format!("error when requesting user: {}", e))
-            }
-        }
+            let mut data = BTreeMap::new();
+            data.insert("id", json::to_value(&user.id));
+            data.insert("name", json::to_value(&user.name));
+            Ok((Status::Ok, "db", data.to_json()))
+        });
     }
 
 }

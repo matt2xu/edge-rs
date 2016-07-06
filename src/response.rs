@@ -5,7 +5,9 @@ use hyper::{Control, Headers, Next};
 
 use hyper::mime::{Mime, TopLevel, SubLevel, Attr, Value};
 
+use crossbeam::sync::chase_lev::{deque, Steal, Stealer, Worker};
 use handlebars::Handlebars;
+use serde_json::value as json;
 use serde::ser::Serialize as ToJson;
 
 use std::borrow::Cow;
@@ -18,7 +20,6 @@ use std::path::Path;
 use std::sync::{Arc};
 
 use buffer::Buffer;
-use crossbeam::sync::chase_lev::{deque, Steal, Stealer, Worker};
 
 pub struct Resp<'a> {
     status: Status,
@@ -166,6 +167,7 @@ impl<'a> Drop for Response<'a> {
     }
 }
 
+/// Defines a handler error
 #[derive(Debug)]
 pub struct HandlerError<'a> {
     status: Status,
@@ -215,6 +217,58 @@ impl<'a> From<(Status, &'a str)> for HandlerError<'a> {
 impl<'a> From<(Status, String)> for HandlerError<'a> {
     fn from(pair: (Status, String)) -> HandlerError<'a> {
         HandlerError::new(pair.0, Some(Cow::Owned(pair.1)))
+    }
+}
+
+/// Defines the handler result
+pub enum HandlerResult {
+    /// Send(status, body): set the status, and sends back the body
+    Send(Status, Vec<u8>),
+
+    /// Render(status, template_name, json_value): set the status, and render a template with a JSON value
+    Render(Status, String, json::Value),
+
+    /// Redirect(status, url): redirects to a URL with a 3xx status
+    Redirect(Status, String),
+
+    /// End(status): ends the response with the given status and no body
+    End(Status)
+}
+
+impl From<Status> for HandlerResult {
+    fn from(status: Status) -> HandlerResult {
+        HandlerResult::End(status)
+    }
+}
+
+/// Converts a pair (status, string) into a `HandlerResult`.
+///
+/// If status is 3xx, this is interpreted as `HandlerResult::Redirect(status, url)`.
+/// Otherwise, this is interpreted as `HandlerResult::Send(status, content)`.
+impl<'a> From<(Status, &'a str)> for HandlerResult {
+    fn from(pair: (Status, &'a str)) -> HandlerResult {
+        let status = pair.0;
+        if status.is_redirection() {
+            HandlerResult::Redirect(pair.0, pair.1.to_string())
+        } else {
+            HandlerResult::Send(pair.0, pair.1.into())
+        }
+    }
+}
+
+/// Converts a pair (status, string) into a `HandlerResult`.
+///
+/// See `From<(Status, &str)>`.
+impl From<(Status, String)> for HandlerResult {
+    fn from(pair: (Status, String)) -> HandlerResult {
+        From::from((pair.0, pair.1.as_str()))
+    }
+}
+
+/// Converts a triple (status, string, json) into `HandlerResult::Render(status, template_name, json)`.
+impl<'a> From<(Status, &'a str, json::Value)> for HandlerResult {
+    fn from(tuple: (Status, &'a str, json::Value)) -> HandlerResult {
+        HandlerResult::Render(tuple.0, tuple.1.to_string(), tuple.2)
     }
 }
 
@@ -272,18 +326,36 @@ impl<'a> Response<'a> {
 
     /// Calls the given callback to get a result.
     ///
-    /// If the result is Ok, returns the given status with no body.
-    /// Otherwise, converts the error into a handler error, and returns the status with the error message
+    /// If the result is Ok, converts the value into a HandleResult, and calls
+    /// end/send/render/redirect depending on the type of result.
+    /// Otherwise, if the result is Err, sets the status with the error message as content (if specified).
     /// as the body.
-    pub fn handle<F>(mut self, mut callback: F) where F: FnMut(&mut Response) -> Result<Status, HandlerError<'a>> {
+    pub fn handle<F, I>(mut self, mut callback: F) where I:Into<HandlerResult>, F: FnMut(&mut Response) -> Result<I, HandlerError<'a>> {
         match callback(&mut self) {
-            Ok(status) => self.end(status),
+            Ok(handler) => {
+                match handler.into() {
+                    HandlerResult::End(status) => {
+                        self.end(status)
+                    }
+                    HandlerResult::Send(status, body) => {
+                        self.status(status);
+                        self.send(body)
+                    }
+                    HandlerResult::Render(status, name, json) => {
+                        self.status(status);
+                        self.render(&name, json)
+                    }
+                    HandlerResult::Redirect(status, url) => {
+                        self.redirect(&url, Some(status))
+                    }
+                }
+            }
             Err(error) => {
-                self.content_type("text/plain");
                 match error.message {
                     None => self.end(error.status),
                     Some(message) => {
                         self.status(error.status);
+                        self.content_type("text/plain");
                         self.send(&*message);
                     }
                 }
