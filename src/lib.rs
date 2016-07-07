@@ -105,15 +105,9 @@ enum HandlerResult<T> {
     Streaming(Box<Fn(&mut T, &mut Stream)>)
 }
 
-impl<T> HandlerResult<T> {
-    pub fn streaming(closure: Box<Fn(&mut T, &mut Stream)>) -> HandlerResult<T> {
-        HandlerResult::Streaming(closure)
-    }
-}
-
-impl<T> From<Box<Fn(&mut T, &mut Stream)>> for HandlerResult<T> {
-    fn from(closure: Box<Fn(&mut T, &mut Stream)>) -> HandlerResult<T> {
-        HandlerResult::Streaming(closure)
+impl<F, T> From<F> for HandlerResult<T> where F: 'static + Fn(&mut T, &mut Stream) {
+    fn from(closure: F) -> HandlerResult<T> {
+        HandlerResult::Streaming(Box::new(closure))
     }
 }
 
@@ -128,8 +122,6 @@ mod tests {
 
     use super::{App, HandlerResult, Router, Response, Stream};
 
-    use std::boxed::Box;
-
     #[test]
     fn test_app() {
         #[derive(Default)]
@@ -137,17 +129,23 @@ mod tests {
             counter: u32
         }
 
+        macro_rules! ok {
+            ($e: expr) => (
+                Some($e.into())
+            )
+        }
+
         impl MyApp {
             fn new_handler(&mut self, res: &mut Response) -> Option<HandlerResult<Self>> {
                 res.status(200);
-                Some(HandlerResult::streaming(Box::new(|this, stream| {
+                ok!(|this: &mut Self, stream: &mut Stream| {
                     println!("counter = {}", this.counter);
                     stream.write("48");
-                })))
+                })
             }
 
             fn new_handler2(&mut self) -> Option<HandlerResult<Self>> {
-                Some(200.into())
+                ok!(200)
             }
 
             fn handler(&mut self) {
