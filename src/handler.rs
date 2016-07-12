@@ -61,10 +61,11 @@ impl<'handler, 'scope> EdgeHandler<'handler, 'scope> {
 
             // add job to scoped pool
             self.scope.execute(move || {
-                router.run_middleware(boxed_app.as_mut(), &mut req);
-
                 match *callback {
-                    Callback::Instance(ref f) => f(boxed_app.as_mut(), &req, response),
+                    Callback::Instance(ref f) => {
+                        router.run_middleware(boxed_app.as_mut(), &mut req);
+                        f(boxed_app.as_mut(), &req, response)
+                    }
                     Callback::Static(ref f) => f(&req, response)
                 }
             });
