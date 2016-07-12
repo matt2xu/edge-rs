@@ -201,6 +201,7 @@ use std::fs::read_dir;
 use std::io::Result as IoResult;
 use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
+use std::result;
 
 mod buffer;
 mod client;
@@ -211,7 +212,7 @@ mod response;
 
 pub use client::Client;
 pub use request::Request;
-pub use response::{Response, Streaming};
+pub use response::{Response, Result, Action, stream};
 pub use router::{Router};
 
 /// Structure for an Edge application.
@@ -219,6 +220,21 @@ pub struct Edge {
     base_url: Url,
     routers: Vec<router::RouterAny>,
     handlebars: Handlebars
+}
+
+/// ok!() means Ok(Action::End).
+/// ok!(expr) returns Ok(From::from(expr))
+#[macro_export]
+macro_rules! ok {
+    () => (
+        return Ok(Action::End);
+    );
+    ($exp:expr) => (
+        return Ok(std::convert::From::from($exp));
+    );
+    ($e1:expr, $e2:expr) => (
+        return Ok(std::convert::From::from(($e1, $e2)));
+    )
 }
 
 impl Edge {
@@ -304,7 +320,7 @@ fn render_html(text: &str) -> String {
 /// see https://github.com/waynenilsen/handlebars-markdown-helper/blob/master/src/lib.rs#L31
 ///
 /// because the handlebars-markdown-helper crate does not allow custom options for Markdown rendering yet
-fn markdown_helper(_: &Context, h: &Helper, _ : &Handlebars, rc: &mut RenderContext) -> Result<(), RenderError> {
+fn markdown_helper(_: &Context, h: &Helper, _ : &Handlebars, rc: &mut RenderContext) -> result::Result<(), RenderError> {
     let markdown_text_var = try!(h.param(0).ok_or_else(|| RenderError::new(
         "Param not found for helper \"markdown\"")
     ));

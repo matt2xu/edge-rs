@@ -1,9 +1,11 @@
 extern crate env_logger;
 #[macro_use]
 extern crate log;
+#[macro_use]
 extern crate edge;
 
-use edge::{json, Edge, Router, Request, Response, Status, Client};
+use edge::{json, Edge, Router, Request, Response, Result, Status, stream, Client};
+use edge::json::value::ToJson;
 
 use std::collections::BTreeMap;
 use std::thread;
@@ -13,9 +15,9 @@ use std::time::Duration;
 struct Home;
 impl Home {
 
-    fn home(&mut self, _req: &Request, mut res: Response) {
+    fn home(&mut self, _req: &Request, res: &mut Response) -> Result {
         res.content_type("text/html");
-        res.render("fetch", BTreeMap::<String, json::Value>::new())
+        ok!("fetch", BTreeMap::<String, json::Value>::new().to_json())
     }
 
 }
@@ -24,32 +26,34 @@ impl Home {
 struct Fetch;
 impl Fetch {
 
-    fn home(&mut self, _req: &Request, res: Response) {
-        res.redirect("/", None)
+    fn home(&mut self, _req: &Request, _res: &mut Response) -> Result {
+        ok!(Status::Found, "/")
     }
 
-    fn fetch(&mut self, req: &Request, res: Response) {
+    fn fetch(&mut self, req: &Request, _res: &mut Response) -> Result {
         let url = req.query("url").unwrap_or("http://google.com").to_string();
+        stream(move |_app: &mut Self, writer| {
+            thread::sleep(Duration::from_secs(1));
 
-        thread::sleep(Duration::from_secs(1));
+            let mut client = Client::new();
+            println!("url = {}", url);
 
-        let mut client = Client::new();
-        let mut stream = res.stream();
-        println!("url = {}", url);
+            let buffer = client.request(&url);
+            if client.status() == Status::Ok {
+                println!("got {} bytes", buffer.len());
+                try!(writer.write(&buffer));
+            }
 
-        let buffer = client.request(&url);
-        if client.status() == Status::Ok {
-            println!("got {} bytes", buffer.len());
-            stream.append(buffer);
-        }
+            thread::sleep(Duration::from_secs(1));
 
-        thread::sleep(Duration::from_secs(1));
+            let buffer = client.request(&url);
+            if client.status() == Status::Ok {
+                println!("got {} bytes", buffer.len());
+                try!(writer.write(&buffer));
+            }
 
-        let buffer = client.request(&url);
-        if client.status() == Status::Ok {
-            println!("got {} bytes", buffer.len());
-            stream.append(buffer);
-        }
+            Ok(())
+        })
     }
 
 }

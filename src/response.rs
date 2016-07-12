@@ -1,149 +1,168 @@
 use hyper::header::{self, CookiePair as Cookie, ContentType, Header, SetCookie};
 use hyper::status::StatusCode as Status;
 
-use hyper::{Control, Headers, Next};
-
+use hyper::Headers;
 use hyper::mime::{Mime, TopLevel, SubLevel, Attr, Value};
 
-use crossbeam::sync::chase_lev::{deque, Steal, Stealer, Worker};
-use handlebars::Handlebars;
 use serde_json::value as json;
-use serde::ser::Serialize as ToJson;
 
+use std::any::Any;
+use std::boxed::Box;
 use std::borrow::Cow;
-use std::cell::UnsafeCell;
-use std::error::Error;
-use std::fmt;
+use std::{error, fmt, result};
 use std::fs::File;
-use std::io::{ErrorKind, Read};
+use std::io::{self, ErrorKind, Read, Write};
 use std::path::Path;
-use std::sync::{Arc};
 
-use buffer::Buffer;
-
-pub struct Resp<'a> {
-    status: Status,
-    headers: Headers,
-
-    body: Buffer,
-    worker: Option<Worker<Buffer>>,
-    stealer: Option<Stealer<Buffer>>,
-
-    handlebars: &'a Handlebars,
-    ctrl: Control
+/// Defines a handler error
+#[derive(Debug)]
+pub struct Error {
+    pub status: Status,
+    pub message: Option<Cow<'static, str>>
 }
 
-impl<'a> Resp<'a> {
-    pub fn new(handlebars: &'a Handlebars, ctrl: Control) -> Resp<'a> {
-        Resp {
-            status: Status::Ok,
-            headers: Headers::default(),
-            body: Buffer::new(),
-            worker: None,
-            stealer: None,
+pub type Result = result::Result<Action, Error>;
 
-            handlebars: handlebars,
-            ctrl: ctrl
+impl Error {
+    fn new(status: Status, message: Option<Cow<'static, str>>) -> Error {
+        Error {
+            status: status,
+            message: message
         }
-    }
-
-    /// notify handler we have something to write
-    /// called by drop and append
-    fn notify(&self) {
-        if let Err(e) = self.ctrl.ready(Next::write()) {
-            error!("could not notify handler: {}", e);
-        }
-    }
-
-    fn is_streaming(&self) -> bool {
-        self.worker.is_some()
-    }
-
-    fn status(&mut self, status: Status) {
-        self.status = status;
-    }
-
-    fn has_header<H: Header>(&self) -> bool {
-        self.headers.has::<H>()
-    }
-
-    fn header<H: Header>(&mut self, header: H) {
-        self.headers.set(header);
-    }
-
-    fn header_raw<K: Into<Cow<'static, str>> + fmt::Debug>(&mut self, name: K, value: Vec<Vec<u8>>) {
-        self.headers.set_raw(name, value);
-    }
-
-    fn push_cookie(&mut self, cookie: Cookie) {
-        self.headers.get_mut::<SetCookie>().unwrap().push(cookie)
-    }
-
-    fn len(&self) -> usize {
-        self.body.len()
-    }
-
-    fn append<D: Into<Buffer>>(&mut self, buffer: D) {
-        self.worker.as_mut().unwrap().push(buffer.into());
-        self.notify();
-    }
-
-    fn send<D: Into<Vec<u8>>>(&mut self, content: D) {
-        self.body.send(content);
-    }
-
-    fn init_deque(&mut self) {
-        let (worker, stealer) = deque();
-        self.worker = Some(worker);
-        self.stealer = Some(stealer);
     }
 }
 
-/// This holds data for the response.
-pub struct ResponseHolder<'a> {
-    resp: Arc<UnsafeCell<Resp<'a>>>
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use std::error::Error;
+        self.description().fmt(f)
+    }
 }
 
-impl<'a> ResponseHolder<'a> {
-
-    pub fn new(handlebars: &'a Handlebars, control: Control) -> ResponseHolder<'a> {
-        ResponseHolder {
-            resp: Arc::new(UnsafeCell::new(Resp::new(handlebars, control)))
+impl error::Error for Error {
+    fn description(&self) -> &str {
+        match self.message {
+            None => "<no description available>",
+            Some(ref message) => &message
         }
     }
 
-    pub fn new_response(&mut self) -> Response<'a> {
-        Response {
-            resp: self.resp.clone()
+    fn cause(&self) -> Option<&error::Error> {
+        None
+    }
+}
+
+impl From<Status> for Error {
+    fn from(status: Status) -> Error {
+        Error::new(status, None)
+    }
+}
+
+impl From<(Status, &'static str)> for Error {
+    fn from(pair: (Status, &'static str)) -> Error {
+        Error::new(pair.0, Some(Cow::Borrowed(pair.1)))
+    }
+}
+
+impl From<(Status, String)> for Error {
+    fn from(pair: (Status, String)) -> Error {
+        Error::new(pair.0, Some(Cow::Owned(pair.1)))
+    }
+}
+
+/// Defines the handler result
+pub enum Action {
+    /// Ends the response with no body
+    End,
+
+    /// Redirects to the given URL with a 3xx status (use 302 Found if unsure).
+    Redirect(Status, String),
+
+    /// Renders the template with the given name using the given JSON value.
+    ///
+    /// If no Content-Type header is set, the content type is set to `text/html`.
+    Render(String, json::Value),
+
+    /// Send(body): set the status, and sends back the body
+    Send(Vec<u8>),
+
+    /// Returns a closure that is called with a Stream argument.
+    Stream(Box<Fn(&mut Any, &mut Write)>),
+
+    /// Sends the given file, setting the Content-Type based on the file's extension.
+    ///
+    /// Known extensions are:
+    ///   - application: js, m3u8, mpd, xml
+    ///   - image: gif, jpg, jpeg, png
+    ///   - text: css, htm, html, txt
+    ///   - video: avi, mp4, mpg, mpeg, ts
+    /// If the file does not exist, this method sends a 404 Not Found response.
+    SendFile(String)
+}
+
+impl From<()> for Action {
+    fn from(_: ()) -> Action {
+        Action::End
+    }
+}
+
+/// Converts a pair (status, string) into `Action::Redirect(status, url)`.
+impl<'a> From<(Status, &'a str)> for Action {
+    fn from(pair: (Status, &'a str)) -> Action {
+        Action::Redirect(pair.0, pair.1.to_string())
+    }
+}
+
+/// Converts a pair (status, string) into `Action::Redirect(status, url)`.
+impl From<(Status, String)> for Action {
+    fn from(pair: (Status, String)) -> Action {
+        From::from((pair.0, pair.1.as_str()))
+    }
+}
+
+/// Converts a pair (string, json) into `Action::Render(template_name, json)`.
+impl<'a> From<(&'a str, json::Value)> for Action {
+    fn from(pair: (&'a str, json::Value)) -> Action {
+        Action::Render(pair.0.to_string(), pair.1)
+    }
+}
+
+/// Converts a pair (string, json) into `Action::Render(template_name, json)`.
+impl From<(String, json::Value)> for Action {
+    fn from(pair: (String, json::Value)) -> Action {
+        Action::Render(pair.0, pair.1)
+    }
+}
+
+/// 
+pub fn stream<F, T, R>(closure: F) -> Result where T: Any, F: 'static + Fn(&mut T, &mut Write) -> io::Result<R> {
+    Ok(Action::Stream(Box::new(move |any, writer| {
+        if let Some(app) = any.downcast_mut::<T>() {
+            if let Err(e) = closure(app, writer) {
+                error!("{}", e);
+            }
         }
-    }
+    })))
+}
 
-    fn resp(&self) -> &Resp<'a> {
-        unsafe { &*self.resp.get() }
+/// Converts a vector of bytes into `Action::Send(bytes)`.
+impl From<Vec<u8>> for Action {
+    fn from(bytes: Vec<u8>) -> Action {
+        Action::Send(bytes)
     }
+}
 
-    pub fn get_status(&self) -> Status {
-        self.resp().status
+/// Converts a &str into `Action::Send(bytes)`.
+impl<'a> From<&'a str> for Action {
+    fn from(string: &'a str) -> Action {
+        Action::Send(string.as_bytes().to_vec())
     }
+}
 
-    pub fn set_headers(&self, headers: &mut Headers) {
-        *headers = self.resp().headers.clone();
-    }
-
-    pub fn is_streaming(&self) -> bool {
-        self.resp().is_streaming()
-    }
-
-    pub fn body(&mut self) -> &mut Buffer {
-        unsafe { &mut (*self.resp.get()).body }
-    }
-
-    pub fn pop(&mut self) -> Option<Buffer> {
-        match self.resp().stealer.as_ref().unwrap().steal() {
-            Steal::Data(buffer) => Some(buffer),
-            Steal::Empty => None,
-            Steal::Abort => panic!("abort")
-        }
+/// Converts a string into `Action::Send(bytes)`.
+impl From<String> for Action {
+    fn from(string: String) -> Action {
+        Action::Send(string.into_bytes())
     }
 }
 
@@ -154,252 +173,66 @@ impl<'a> ResponseHolder<'a> {
 /// or deferred pending some computation (asynchronous mode).
 ///
 /// The response is sent when it is dropped.
-pub struct Response<'a> {
-    resp: Arc<UnsafeCell<Resp<'a>>>
+pub struct Response {
+    pub status: Status,
+    pub headers: Headers,
+    streaming: bool
 }
 
-// no worries, the response is always modified by only one thread at a time
-unsafe impl<'a> Send for Response<'a> {}
+impl Response {
 
-impl<'a> Drop for Response<'a> {
-    fn drop(&mut self) {
-        self.resp().notify();
-    }
-}
-
-/// Defines a handler error
-#[derive(Debug)]
-pub struct HandlerError<'a> {
-    status: Status,
-    message: Option<Cow<'a, str>>
-}
-
-impl<'a> HandlerError<'a> {
-    fn new(status: Status, message: Option<Cow<'a, str>>) -> HandlerError<'a> {
-        HandlerError {
-            status: status,
-            message: message
-        }
-    }
-}
-
-impl<'a> fmt::Display for HandlerError<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.description().fmt(f)
-    }
-}
-
-impl<'a> Error for HandlerError<'a> {
-    fn description(&self) -> &str {
-        match self.message {
-            None => "<no description available>",
-            Some(ref message) => &message
-        }
-    }
-
-    fn cause(&self) -> Option<&Error> {
-        None
-    }
-}
-
-impl<'a> From<Status> for HandlerError<'a> {
-    fn from(status: Status) -> HandlerError<'a> {
-        HandlerError::new(status, None)
-    }
-}
-
-impl<'a> From<(Status, &'a str)> for HandlerError<'a> {
-    fn from(pair: (Status, &'a str)) -> HandlerError<'a> {
-        HandlerError::new(pair.0, Some(Cow::Borrowed(pair.1)))
-    }
-}
-
-impl<'a> From<(Status, String)> for HandlerError<'a> {
-    fn from(pair: (Status, String)) -> HandlerError<'a> {
-        HandlerError::new(pair.0, Some(Cow::Owned(pair.1)))
-    }
-}
-
-/// Defines the handler result
-pub enum HandlerResult {
-    /// Send(status, body): set the status, and sends back the body
-    Send(Status, Vec<u8>),
-
-    /// Render(status, template_name, json_value): set the status, and render a template with a JSON value
-    Render(Status, String, json::Value),
-
-    /// Redirect(status, url): redirects to a URL with a 3xx status
-    Redirect(Status, String),
-
-    /// End(status): ends the response with the given status and no body
-    End(Status)
-}
-
-impl From<Status> for HandlerResult {
-    fn from(status: Status) -> HandlerResult {
-        HandlerResult::End(status)
-    }
-}
-
-/// Converts a pair (status, string) into a `HandlerResult`.
-///
-/// If status is 3xx, this is interpreted as `HandlerResult::Redirect(status, url)`.
-/// Otherwise, this is interpreted as `HandlerResult::Send(status, content)`.
-impl<'a> From<(Status, &'a str)> for HandlerResult {
-    fn from(pair: (Status, &'a str)) -> HandlerResult {
-        let status = pair.0;
-        if status.is_redirection() {
-            HandlerResult::Redirect(pair.0, pair.1.to_string())
-        } else {
-            HandlerResult::Send(pair.0, pair.1.into())
-        }
-    }
-}
-
-/// Converts a pair (status, string) into a `HandlerResult`.
-///
-/// See `From<(Status, &str)>`.
-impl From<(Status, String)> for HandlerResult {
-    fn from(pair: (Status, String)) -> HandlerResult {
-        From::from((pair.0, pair.1.as_str()))
-    }
-}
-
-/// Converts a triple (status, string, json) into `HandlerResult::Render(status, template_name, json)`.
-impl<'a> From<(Status, &'a str, json::Value)> for HandlerResult {
-    fn from(tuple: (Status, &'a str, json::Value)) -> HandlerResult {
-        HandlerResult::Render(tuple.0, tuple.1.to_string(), tuple.2)
-    }
-}
-
-impl<'a> Response<'a> {
-
-    fn resp(&self) -> &Resp<'a> {
-        unsafe {
-            &*self.resp.get()
-        }
-    }
-
-    fn resp_mut(&self) -> &mut Resp<'a> {
-        unsafe {
-            &mut *self.resp.get()
+    pub fn new() -> Response {
+        Response {
+            status: Status::Ok,
+            headers: Headers::default(),
+            streaming: false
         }
     }
 
     /// Sets the status code of this response.
     pub fn status(&mut self, status: Status) -> &mut Self {
-        self.resp_mut().status(status);
+        self.status = status;
         self
     }
 
     /// Sets the Content-Type header.
     pub fn content_type<S: Into<Vec<u8>>>(&mut self, mime: S) -> &mut Self {
-        self.header_raw("Content-Type", mime)
+        self.headers.set_raw("Content-Type", vec![mime.into()]);
+        self
     }
 
     /// Sets the Content-Length header.
     pub fn len(&mut self, len: u64) -> &mut Self {
-        self.header(header::ContentLength(len))
+        self.headers.set(header::ContentLength(len));
+        self
     }
 
     /// Sets the given cookie.
     pub fn cookie(&mut self, cookie: Cookie) {
-        let has_cookie_header = self.resp().has_header::<SetCookie>();
+        let has_cookie_header = self.headers.has::<SetCookie>();
         if has_cookie_header {
-            self.resp_mut().push_cookie(cookie)
+            self.headers.get_mut::<SetCookie>().unwrap().push(cookie)
         } else {
-            self.resp_mut().header(SetCookie(vec![cookie]))
+            self.headers.set(SetCookie(vec![cookie]))
         }
     }
 
     /// Sets the given header.
     pub fn header<H: Header>(&mut self, header: H) -> &mut Self {
-        self.resp_mut().header(header);
+        self.headers.set(header);
         self
     }
 
     /// Sets the given header with raw strings.
     pub fn header_raw<K: Into<Cow<'static, str>> + fmt::Debug, V: Into<Vec<u8>>>(&mut self, name: K, value: V) -> &mut Self {
-        self.resp_mut().header_raw(name, vec![value.into()]);
+        self.headers.set_raw(name, vec![value.into()]);
         self
-    }
-
-    /// Calls the given callback to get a result.
-    ///
-    /// If the result is Ok, converts the value into a HandleResult, and calls
-    /// end/send/render/redirect depending on the type of result.
-    /// Otherwise, if the result is Err, sets the status with the error message as content (if specified).
-    /// as the body.
-    pub fn handle<F, I>(mut self, mut callback: F) where I:Into<HandlerResult>, F: FnMut(&mut Response) -> Result<I, HandlerError<'a>> {
-        match callback(&mut self) {
-            Ok(handler) => {
-                match handler.into() {
-                    HandlerResult::End(status) => {
-                        self.end(status)
-                    }
-                    HandlerResult::Send(status, body) => {
-                        self.status(status);
-                        self.send(body)
-                    }
-                    HandlerResult::Render(status, name, json) => {
-                        self.status(status);
-                        self.render(&name, json)
-                    }
-                    HandlerResult::Redirect(status, url) => {
-                        self.redirect(&url, Some(status))
-                    }
-                }
-            }
-            Err(error) => {
-                match error.message {
-                    None => self.end(error.status),
-                    Some(message) => {
-                        self.status(error.status);
-                        self.content_type("text/plain");
-                        self.send(&*message);
-                    }
-                }
-            }
-        }
     }
 
     /// Sets the Location header.
     pub fn location<S: Into<String>>(&mut self, url: S) -> &mut Self {
-        self.header(header::Location(url.into()))
-    }
-
-    /// Redirects to the given URL with the given status, or 302 Found if none is given.
-    pub fn redirect(mut self, url: &str, status: Option<Status>) {
-        self.location(url);
-        self.end(status.unwrap_or(Status::Found))
-    }
-
-    /// Ends this response with the given status and an empty body
-    pub fn end(mut self, status: Status) {
-        self.status(status);
-        self.len(0);
-    }
-
-    /// Renders the template with the given name using the given data.
-    ///
-    /// If no Content-Type header is set, the content type is set to `text/html`.
-    pub fn render<T: ToJson>(self, name: &str, data: T) {
-        let need_content_type = !self.resp().has_header::<ContentType>();
-        if need_content_type {
-            self.resp_mut().header(ContentType::html());
-        }
-
-        let result = self.resp().handlebars.render(name, &data);
-        self.send(result.unwrap())
-    }
-
-    /// Sends the given content and ends this response.
-    ///
-    /// Status defaults to 200 Ok, headers must have been set before this method is called.
-    pub fn send<D: Into<Vec<u8>>>(mut self, content: D) {
-        self.resp_mut().send(content);
-        let length = self.resp().len();
-        self.len(length as u64);
+        self.headers.set(header::Location(url.into()));
+        self
     }
 
     /// Sends the given file, setting the Content-Type based on the file's extension.
@@ -410,8 +243,8 @@ impl<'a> Response<'a> {
     ///   - text: css, htm, html, txt
     ///   - video: avi, mp4, mpg, mpeg, ts
     /// If the file does not exist, this method sends a 404 Not Found response.
-    pub fn send_file<P: AsRef<Path>>(mut self, path: P) {
-        let need_content_type = !self.resp().has_header::<ContentType>();
+    fn send_file<P: AsRef<Path>>(&mut self, path: P) -> Option<Vec<u8>> {
+        let need_content_type = !self.headers.has::<ContentType>();
         if need_content_type {
             let extension = path.as_ref().extension();
             if let Some(ext) = extension {
@@ -441,7 +274,7 @@ impl<'a> Response<'a> {
                 };
 
                 if let Some((top, sub, attr)) = content_type {
-                    self.resp_mut().header(ContentType(Mime(TopLevel::Ext(top.to_string()),
+                    self.headers.set(ContentType(Mime(TopLevel::Ext(top.to_string()),
                         SubLevel::Ext(sub.to_string()),
                         match attr {
                             None => vec![],
@@ -459,56 +292,32 @@ impl<'a> Response<'a> {
                 let mut buf = Vec::with_capacity(file.metadata().ok().map_or(1024, |meta| meta.len() as usize));
                 if let Err(err) = file.read_to_end(&mut buf) {
                     self.status(Status::InternalServerError).content_type("text/plain");
-                    self.send(format!("{}", err))
+                    Some(format!("{}", err).into())
                 } else {
-                    self.send(buf)
+                    Some(buf)
                 }
             },
-            Err(ref err) if err.kind() == ErrorKind::NotFound => self.end(Status::NotFound),
+            Err(ref err) if err.kind() == ErrorKind::NotFound => {
+                self.status(Status::NotFound);
+                None
+            },
             Err(ref err) => {
                 self.status(Status::InternalServerError).content_type("text/plain");
-                self.send(format!("{}", err))
+                Some(format!("{}", err).into())
             }
         }
     }
 
-    /// Moves to streaming mode.
-    ///
-    /// If no Content-Length is set, use Transfer-Encoding: chunked
-    pub fn stream(self) -> Streaming<'a> {
-        self.resp_mut().init_deque();
-        Streaming {
-            resp: self.resp.clone()
-        }
-    }
 }
 
-pub struct Streaming<'a> {
-    resp: Arc<UnsafeCell<Resp<'a>>>
+pub fn send_file<P: AsRef<Path>>(response: &mut Response, path: P) -> Option<Vec<u8>> {
+    response.send_file(path)
 }
 
-// no worries, the response is always modified by only one thread at a time
-unsafe impl<'a> Send for Streaming<'a> {}
-
-impl<'a> Drop for Streaming<'a> {
-    fn drop(&mut self) {
-        // append an empty buffer to indicate there is no more data left, and notify handler
-        self.resp_mut().append(vec![]);
-    }
+pub fn set_streaming(response: &mut Response) {
+    response.streaming = true;
 }
 
-impl<'a> Streaming<'a> {
-
-    fn resp_mut(&self) -> &mut Resp<'a> {
-        unsafe {
-            &mut *self.resp.get()
-        }
-    }
-
-    /// Appends the given content to this response's body.
-    pub fn append<D: Into<Vec<u8>>>(&mut self, content: D) {
-        let vec = content.into();
-        debug!("append {} bytes", vec.len());
-        self.resp_mut().append(vec);
-    }
+pub fn is_streaming(response: &Response) -> bool {
+    response.streaming
 }
