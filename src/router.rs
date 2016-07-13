@@ -9,11 +9,13 @@ use std::marker::PhantomData;
 
 use request;
 use request::Request;
-use response::Response;
+use response::{Result, Response};
 
-pub type TypedCallback<T> = fn(&mut T, &Request, Response);
-pub type TypedMiddleware<T> = fn(&mut T, &mut Request);
-pub type Static = fn(&Request, Response);
+use std::result;
+
+pub type TypedCallback<T> = fn(&mut T, &Request, &mut Response) -> Result;
+pub type TypedMiddleware<T> = fn(&mut T, &mut Request, &mut Response);
+pub type Static = fn(&Request, &mut Response) -> Result;
 
 /// A segment is either a fixed string, or a variable with a name
 #[derive(Debug)]
@@ -40,7 +42,7 @@ pub struct Route {
 }
 
 /// Returns a vector of segments from the given string.
-fn get_segments(from: &str) -> Result<Vec<Segment>, &str> {
+fn get_segments(from: &str) -> result::Result<Vec<Segment>, &str> {
     if from.len() == 0 {
         return Err("route must not be empty");
     }
@@ -58,7 +60,7 @@ fn get_segments(from: &str) -> Result<Vec<Segment>, &str> {
 }
 
 impl Route {
-    fn new(from: &str, callback: Callback) -> Result<Route, &str> {
+    fn new(from: &str, callback: Callback) -> result::Result<Route, &str> {
         Ok(Route {
             segments: try!(get_segments(from)),
             callback: callback
@@ -95,9 +97,9 @@ impl<T: Default + Any + Send> Router<T> {
     }
 
     pub fn add_middleware(&mut self, middleware: TypedMiddleware<T>) {
-        self.inner.middleware.push(Box::new(move |any, req| {
+        self.inner.middleware.push(Box::new(move |any, req, res| {
             if let Some(app) = any.downcast_mut::<T>() {
-                middleware(app, req);
+                middleware(app, req, res);
             }
         }))
     }
@@ -142,9 +144,8 @@ impl<T: Default + Any + Send> Router<T> {
     #[inline]
     pub fn insert(&mut self, method: Method, path: &str, callback: TypedCallback<T>) {
         self.insert_callback(method, path, Callback::Instance(Box::new(move |any, req, res| {
-            if let Some(app) = any.downcast_mut::<T>() {
-                callback(app, req, res);
-            }
+            let app = any.downcast_mut::<T>().unwrap();
+            callback(app, req, res)
         })))
     }
 
@@ -169,13 +170,13 @@ pub fn get_inner<T>(router: Router<T>) -> RouterAny {
 
 /// Signature for a callback method
 pub enum Callback {
-    Instance(Box<Fn(&mut Any, &Request, Response)>),
+    Instance(Box<Fn(&mut Any, &Request, &mut Response) -> Result>),
     Static(Static)
 }
 
 unsafe impl Sync for Callback {}
 
-pub type Middleware = Box<Fn(&mut Any, &mut Request)>;
+pub type Middleware = Box<Fn(&mut Any, &mut Request, &mut Response)>;
 
 /// Router structure
 pub struct RouterAny {
@@ -256,9 +257,9 @@ impl RouterAny {
         (self.init)()
     }
 
-    pub fn run_middleware(&self, app: &mut Any, req: &mut Request) {
+    pub fn run_middleware(&self, app: &mut Any, req: &mut Request, res: &mut Response) {
         for middleware in &self.middleware {
-            middleware(app, req);
+            middleware(app, req, res);
         }
     }
 

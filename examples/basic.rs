@@ -3,15 +3,18 @@
 extern crate env_logger;
 #[macro_use]
 extern crate log;
+
+#[macro_use]
 extern crate edge;
 
 #[macro_use]
 extern crate lazy_static;
 
-use edge::{json, Edge, Router, Cookie, Request, Response, Status};
+use edge::{json, Edge, Router, Cookie, Request, Response, Result, Action, Status, stream};
 use edge::header::AccessControlAllowOrigin;
 use edge::json::value::ToJson;
 
+use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
@@ -38,94 +41,90 @@ impl Default for MyApp {
 
 impl MyApp {
 
-    fn home(&mut self, _req: &Request, mut res: Response) {
+    fn home(&mut self, _req: &Request, res: &mut Response) -> Result {
         res.content_type("text/html; charset=UTF-8").header(AccessControlAllowOrigin::Any);
-        res.send("<html><head><title>home</title></head><body><h1>Hello, world!</h1></body></html>")
+        let html = "<html><head><title>home</title></head><body><h1>Hello, world!</h1></body></html>".to_string();
+        ok!(html)
     }
 
-    fn hello(&mut self, req: &Request, res: Response) {
-        res.handle(|_| {
-            let cnt = self.counter.fetch_add(1, Ordering::SeqCst);
+    fn hello(&mut self, req: &Request, _res: &mut Response) -> Result {
+        let cnt = self.counter.fetch_add(1, Ordering::SeqCst);
 
-            let first_name = req.param("first_name").unwrap_or("John");
-            let last_name = req.param("last_name").unwrap_or("Doe");
+        let first_name = req.param("first_name").unwrap_or("John");
+        let last_name = req.param("last_name").unwrap_or("Doe");
 
-            let mut data = BTreeMap::new();
-            data.insert("first_name", json::to_value(first_name));
-            data.insert("last_name", json::to_value(last_name));
-            data.insert("counter", json::to_value(&cnt));
-            data.insert("content", json::to_value(r#"## Contents
+        let mut data = BTreeMap::new();
+        data.insert("first_name", json::to_value(first_name));
+        data.insert("last_name", json::to_value(last_name));
+        data.insert("counter", json::to_value(&cnt));
+        data.insert("content", json::to_value(r#"## Contents
 This is a list:
 
 - item 1
 - item 2
 
 "#));
-            Ok((Status::Ok, "hello", data.to_json()))
-        });
+        Ok(("hello", data.to_json()).into())
     }
 
-    fn settings(&mut self, req: &Request, res: Response) {
-        res.handle(|res| {
-            let mut cookies = req.cookies();
-            println!("name cookie: {}", cookies.find(|cookie| cookie.name == "name")
-                .map_or("nope", |cookie| &cookie.value));
+    fn settings(&mut self, req: &Request, res: &mut Response) -> Result {
+        let mut cookies = req.cookies();
+        println!("name cookie: {}", cookies.find(|cookie| cookie.name == "name")
+            .map_or("nope", |cookie| &cookie.value));
 
-            res.content_type("text/html; charset=UTF-8");
-            Ok((Status::Ok, "<html><head><title>Settings</title></head><body><h1>Settings</h1></body></html>"))
-        });
+        res.content_type("text/html; charset=UTF-8");
+        ok!("<html><head><title>Settings</title></head><body><h1>Settings</h1></body></html>")
     }
 
-    fn login(&mut self, req: &Request, res: Response) {
-        res.handle(|res| {
-            let form = try!(req.form().map_err(|e| (Status::BadRequest, e.to_string())));
-            if let Some(username) = form.get("username") {
-                if username == "error with message" {
-                    try!(Err((Status::BadRequest, "bad user name: error")));
-                } else if username == "error no message" {
-                    try!(Err(Status::BadRequest));
-                }
-
-                let mut cookie = Cookie::new("name".to_string(), username.to_string());
-                cookie.domain = Some("localhost".to_string());
-                cookie.httponly = true;
-                res.cookie(cookie);
+    fn login(&mut self, req: &Request, res: &mut Response) -> Result {
+        let form = try!(req.form().map_err(|e| (Status::BadRequest, e.to_string())));
+        if let Some(username) = form.get("username") {
+            if username == "error with message" {
+                try!(Err((Status::BadRequest, "bad user name: error")));
+            } else if username == "error no message" {
+                try!(Err(Status::BadRequest));
             }
 
-            Ok(Status::NoContent)
-        });
+            let mut cookie = Cookie::new("name".to_string(), username.to_string());
+            cookie.domain = Some("localhost".to_string());
+            cookie.httponly = true;
+            res.cookie(cookie);
+        }
+
+        res.status(Status::NoContent);
+        ok!()
     }
 
-    fn redirect(&mut self, _req: &Request, res: Response) {
-        res.handle(|_| {
-            println!("waiting 3 seconds");
-            thread::sleep(Duration::from_secs(3));
-            Ok((Status::Found, "http://google.com"))
-        });
+    fn redirect(&mut self, _req: &Request, _res: &mut Response) -> Result {
+        println!("waiting 3 seconds");
+        thread::sleep(Duration::from_secs(3));
+        Ok(Action::Redirect(Status::Found, "http://google.com".to_string()))
     }
 
-    fn streaming(&mut self, _req: &Request, res: Response) {
-        let mut res = res.stream();
-        res.append("toto".as_bytes());
-        thread::sleep(Duration::from_secs(1));
+    fn streaming(&mut self, _req: &Request, _res: &mut Response) -> Result {
+        stream(|_app: &mut Self, writer| {
+            thread::sleep(Duration::from_secs(1));
+            try!(writer.write("toto".as_bytes()));
 
-        res.append("tata".as_bytes());
-        thread::sleep(Duration::from_secs(1));
+            thread::sleep(Duration::from_secs(1));
+            try!(writer.write("tata".as_bytes()));
 
-        res.append("titi".as_bytes());
+            thread::sleep(Duration::from_secs(1));
+            writer.write("titi".as_bytes())
+        })
     }
 
 }
 
 impl MyApp {
-    fn before(&mut self, req: &mut Request) {
+    fn before(&mut self, req: &mut Request, _response: &mut Response) {
         println!("hello middleware for request {:?}", req.path());
     }
 }
 
-fn files(req: &Request, res: Response) {
+fn files(req: &Request, _res: &mut Response) -> Result {
     let path = req.path()[1..].join("/");
-    res.send_file("web/".to_string() + &path)
+    Ok(Action::SendFile("web/".to_string() + &path))
 }
 
 fn main() {

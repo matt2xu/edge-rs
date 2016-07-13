@@ -4,7 +4,7 @@ use hyper::{Control, Decoder, Encoder, Next};
 use hyper::HttpVersion::{Http09, Http10, Http11};
 
 use hyper::error::Error as HyperError;
-use hyper::header::{ContentLength, Encoding, TransferEncoding};
+use hyper::header::{ContentLength, ContentType, Encoding, TransferEncoding};
 use hyper::method::Method::{Connect, Delete, Get, Head, Trace};
 use hyper::net::HttpStream;
 use hyper::server::{Handler, Request as HttpRequest, Response as HttpResponse};
@@ -12,12 +12,58 @@ use hyper::status::StatusCode as Status;
 
 use scoped_pool::Scope;
 
+use serde::ser::Serialize as ToJson;
+
 use url::Url;
 
 use buffer::Buffer;
 use request::{self, Request};
-use response::ResponseHolder;
+use response::{self, Response, Result, Action};
 use router::{Callback, RouterAny};
+
+use crossbeam::sync::chase_lev::{deque, Steal, Stealer, Worker};
+
+use std::any::Any;
+use std::io::{self, Write};
+
+enum Reply {
+    Headers(Response),
+    Body(Buffer)
+}
+
+enum Body {
+    Empty,
+    Some(Buffer),
+    Streaming(Box<Fn(&mut Any, &mut Write)>)
+}
+
+struct Stream {
+    worker: Worker<Reply>,
+    control: Control
+}
+
+impl Write for Stream {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.worker.push(Reply::Body(buf.to_vec().into()));
+        if let Err(e) = self.control.ready(Next::write()) {
+            error!("could not notify handler: {}", e);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        self.worker.push(Reply::Body(vec![].into()));
+        if let Err(e) = self.control.ready(Next::write()) {
+            error!("could not notify handler: {}", e);
+        }
+    }
+}
 
 /// a handler that lasts only the time of a request
 /// scope outlives handler
@@ -28,7 +74,11 @@ pub struct EdgeHandler<'handler, 'scope: 'handler> {
     request: Option<Request>,
     is_head_request: bool,
     buffer: Option<Buffer>,
-    holder: ResponseHolder<'scope>
+
+    handlebars: &'scope Handlebars,
+    control: Control,
+    stealer: Option<Stealer<Reply>>,
+    streaming: bool
 }
 
 impl<'handler, 'scope> EdgeHandler<'handler, 'scope> {
@@ -40,11 +90,18 @@ impl<'handler, 'scope> EdgeHandler<'handler, 'scope> {
             request: None,
             is_head_request: false,
             buffer: None,
-            holder: ResponseHolder::new(handlebars, control)
+
+            handlebars: handlebars,
+            control: control,
+            stealer: None,
+            streaming: false
         }
     }
 
     fn callback(&mut self) -> Next {
+        let (mut worker, stealer) = deque();
+        self.stealer = Some(stealer);
+
         let mut req = self.request.take().unwrap();
 
         let result = self.routers.iter().filter_map(|router|
@@ -57,40 +114,140 @@ impl<'handler, 'scope> EdgeHandler<'handler, 'scope> {
 
         if let Some((router, callback)) = result {
             let mut boxed_app = router.new_instance();
-            let response = self.holder.new_response();
 
             // add job to scoped pool
+            let ctrl = self.control.clone();
+            let handlebars = self.handlebars;
+
             self.scope.execute(move || {
-                match *callback {
-                    Callback::Instance(ref f) => {
-                        router.run_middleware(boxed_app.as_mut(), &mut req);
-                        f(boxed_app.as_mut(), &req, response)
+                let mut response = Response::new();
+                let app = boxed_app.as_mut();
+                let result =
+                    match *callback {
+                        Callback::Instance(ref f) => {
+                            router.run_middleware(app, &mut req, &mut response);
+                            f(app, &req, &mut response)
+                        }
+                        Callback::Static(ref f) => f(&req, &mut response)
+                    };
+
+                let body = process_handle_result(&mut response, result, handlebars);
+                if let Body::Some(ref body) = body {
+                    response.len(body.len() as u64);
+                }
+                worker.push(Reply::Headers(response));
+                match body {
+                    Body::Some(body) => { worker.push(Reply::Body(body)); }
+                    Body::Streaming(closure) => {
+                        if let Err(e) = ctrl.ready(Next::write()) {
+                            error!("could not notify handler: {}", e);
+                        }
+                        let mut stream = Stream {
+                            worker: worker,
+                            control: ctrl
+                        };
+                        closure(app, &mut stream);
+                        return;
                     }
-                    Callback::Static(ref f) => f(&req, response)
+                    Body::Empty => ()
+                }
+
+                if let Err(e) = ctrl.ready(Next::write()) {
+                    error!("could not notify handler: {}", e);
                 }
             });
 
             // and wait for it to notify us
             Next::wait()
         } else {
-            //warn!("route not found for path {:?}", req.path());
-            let mut res = self.holder.new_response();
-            res.status(Status::NotFound);
-            res.content_type("text/plain");
-            //res.send(format!("not found: {:?}", req.path()));
+            //warn!("route not found for path {:?}", req.path())
+            let mut response = Response::new();
+            response.status(Status::NotFound).content_type("text/plain");
+            worker.push(Reply::Headers(response));
+            worker.push(Reply::Body(format!("not found: {:?}", req.path()).into_bytes().into()));
             Next::write()
         }
     }
 
     fn bad_request(&mut self, message: &str) -> Next {
-        error!("Bad Request: {}", message);
+        let (mut worker, stealer) = deque();
+        self.stealer = Some(stealer);
 
-        let mut res = self.holder.new_response();
-        res.status(Status::BadRequest).content_type("text/plain; charset=UTF-8");
-        res.send(message);
+        error!("Bad Request: {}", message);
+        let mut response = Response::new();
+        response.status(Status::BadRequest).content_type("text/plain; charset=UTF-8");
+        worker.push(Reply::Headers(response));
+        worker.push(Reply::Body(message.to_string().into_bytes().into()));
         Next::write()
     }
 
+}
+
+/// Matches the result to update the response and produce a body.
+///
+/// If the result is Ok, converts the value into a HandleResult, and calls
+/// end/send/render/redirect depending on the type of result.
+/// Otherwise, if the result is Err, sets the status with the error message as content (if specified).
+/// as the body.
+fn process_handle_result(response: &mut Response, result: Result, handlebars: &Handlebars) -> Body {
+    match result {
+        Ok(handler) => {
+            match handler.into() {
+                Action::End => {
+                    Body::Empty
+                }
+                Action::Redirect(status, url) => {
+                    response.status(status);
+                    response.location(url);
+                    Body::Empty
+                }
+                Action::Render(name, json) => {
+                    let buffer = render(response, handlebars, &name, json);
+                    Body::Some(buffer)
+                }
+                Action::Send(body) => {
+                    Body::Some(body.into())
+                }
+                Action::SendFile(filename) => {
+                    if let Some(body) = response::send_file(response, filename).map(|vec| vec.into()) {
+                        Body::Some(body)
+                    } else {
+                        Body::Empty
+                    }
+                }
+                Action::Stream(closure) => {
+                    response::set_streaming(response);
+                    Body::Streaming(closure)
+                }
+            }
+        }
+        Err(error) => {
+            match error.message {
+                None => {
+                    response.status(error.status);
+                    Body::Empty
+                }
+                Some(message) => {
+                    response.status(error.status);
+                    response.content_type("text/plain");
+                    Body::Some((&*message).as_bytes().to_vec().into())
+                }
+            }
+        }
+    }
+}
+
+/// Renders the template with the given name using the given data.
+///
+/// If no Content-Type header is set, the content type is set to `text/html`.
+fn render<T: ToJson>(response: &mut Response, handlebars: &Handlebars, name: &str, data: T) -> Buffer {
+    let need_content_type = !response.headers.has::<ContentType>();
+    if need_content_type {
+        response.header(ContentType::html());
+    }
+
+    let result = handlebars.render(name, &data);
+    result.unwrap().into_bytes().into()
 }
 
 /// Implements Handler for our EdgeHandler.
@@ -138,48 +295,67 @@ impl<'handler, 'scope> Handler<HttpStream> for EdgeHandler<'handler, 'scope> {
         debug!("on_response");
 
         // we got here from callback directly or Resp notified the Control
-        let status = self.holder.get_status();
+        loop {
+            match self.stealer.as_ref().unwrap().steal() {
+                Steal::Data(reply) => {
+                    match reply {
+                        Reply::Headers(response) => {
+                            self.streaming = response::is_streaming(&response);
+                            let status = response.status;
 
-        // set status and headers
-        res.set_status(status);
-        self.holder.set_headers(res.headers_mut());
+                            // set status and headers
+                            res.set_status(status);
+                            *res.headers_mut() = response.headers;
 
-        // 3.3.2 Content-Length
-        // http://httpwg.org/specs/rfc7230.html#header.content-length
-        //
-        // A server MUST NOT send a Content-Length header field in any response
-        // with a status code of 1xx (Informational) or 204 (No Content).
-        //
-        // A server MAY send a Content-Length header field in a response to a HEAD request
-        // A server MAY send a Content-Length header field in a 304 (Not Modified) response
-        if status.is_informational() ||
-            status == Status::NoContent || status == Status::NotModified ||
-            self.is_head_request {
-            // we remove any ContentLength header in those cases
-            // even in 304 and response to HEAD
-            // because we cannot guarantee that the length is the same
-            res.headers_mut().remove::<ContentLength>();
-            return Next::end();
-        }
-
-        if !self.holder.body().is_empty() {
-            debug!("has body");
-            Next::write()
-        } else if self.holder.is_streaming() {
-            debug!("streaming mode, waiting");
-            Next::wait()
-        } else {
-            debug!("has no body, ending");
-            Next::end()
+                            // 3.3.2 Content-Length
+                            // http://httpwg.org/specs/rfc7230.html#header.content-length
+                            //
+                            // A server MUST NOT send a Content-Length header field in any response
+                            // with a status code of 1xx (Informational) or 204 (No Content).
+                            //
+                            // A server MAY send a Content-Length header field in a response to a HEAD request
+                            // A server MAY send a Content-Length header field in a 304 (Not Modified) response
+                            if status.is_informational() ||
+                                status == Status::NoContent || status == Status::NotModified ||
+                                self.is_head_request {
+                                // we remove any ContentLength header in those cases
+                                // even in 304 and response to HEAD
+                                // because we cannot guarantee that the length is the same
+                                res.headers_mut().remove::<ContentLength>();
+                                return Next::end();
+                            }
+                        }
+                        Reply::Body(body) => {
+                            debug!("has body");
+                            self.buffer = Some(body);
+                            return Next::write();
+                        }
+                    }
+                }
+                Steal::Empty => {
+                    if self.streaming {
+                        debug!("streaming mode, waiting");
+                        return Next::wait();
+                    } else {
+                        debug!("has no body, ending");
+                        return Next::end();
+                    }
+                }
+                Steal::Abort => panic!("abort")
+            }
         }
     }
 
     fn on_response_writable(&mut self, transport: &mut Encoder<HttpStream>) -> Next {
         debug!("on_response_writable");
 
-        if self.holder.is_streaming() {
+        if self.streaming {
             if self.buffer.is_none() {
-                self.buffer = self.holder.pop();
+                self.buffer = match self.stealer.as_ref().unwrap().steal() {
+                    Steal::Data(Reply::Body(body)) => Some(body),
+                    Steal::Empty => None,
+                    _ => panic!("unexpected")
+                };
             }
 
             if self.buffer.is_none() {
@@ -207,7 +383,8 @@ impl<'handler, 'scope> Handler<HttpStream> for EdgeHandler<'handler, 'scope> {
                 }
             }
         } else {
-            if let Ok(keep_writing) = self.holder.body().write_to(transport) {
+            let body = self.buffer.as_mut().unwrap();
+            if let Ok(keep_writing) = body.write_to(transport) {
                 if keep_writing {
                     Next::write()
                 } else {

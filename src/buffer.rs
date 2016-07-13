@@ -115,10 +115,6 @@ impl Buffer {
         }
     }
 
-    pub fn send<D: Into<Vec<u8>>>(&mut self, content: D) {
-        self.content = content.into();
-    }
-
     /// Takes the contents of this buffer out of it, and resets the current read/write position.
     pub fn take(&mut self) -> Vec<u8> {
         self.pos = 0;
