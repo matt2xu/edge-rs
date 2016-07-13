@@ -169,6 +169,13 @@ impl From<String> for Action {
     }
 }
 
+/// Conversion from `json::Value` into `Action::Send(bytes)`.
+impl From<json::Value> for Action {
+    fn from(json: json::Value) -> Action {
+        From::from(json.to_string())
+    }
+}
+
 /// Wraps the given closure in a box and returns `Ok(Action::Stream(box))`.
 ///
 /// The closure will be called with a writer implementing the `Write` trait
@@ -227,8 +234,7 @@ impl Response {
 
     /// Sets the given cookie.
     pub fn cookie(&mut self, cookie: Cookie) {
-        let has_cookie_header = self.headers.has::<SetCookie>();
-        if has_cookie_header {
+        if self.headers.has::<SetCookie>() {
             self.headers.get_mut::<SetCookie>().unwrap().push(cookie)
         } else {
             self.headers.set(SetCookie(vec![cookie]))

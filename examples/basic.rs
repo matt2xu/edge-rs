@@ -66,13 +66,18 @@ This is a list:
         ok!("hello", data)
     }
 
-    fn settings(&mut self, req: &Request, res: &mut Response) -> Result {
+    fn counter(&mut self, req: &Request, res: &mut Response) -> Result {
         let mut cookies = req.cookies();
-        println!("name cookie: {}", cookies.find(|cookie| cookie.name == "name")
-            .map_or("nope", |cookie| &cookie.value));
+        let name = cookies.find(|cookie| cookie.name == "name")
+            .map_or("nope", |cookie| &cookie.value);
+        println!("name cookie: {}", name);
 
-        res.content_type("text/html; charset=UTF-8");
-        ok!("<html><head><title>Settings</title></head><body><h1>Settings</h1></body></html>")
+        let mut data = BTreeMap::new();
+        data.insert("name", json::to_value(name));
+        let cnt = self.counter.load(Ordering::Relaxed);
+        data.insert("counter", json::to_value(&cnt));
+        res.content_type("application/json");
+        ok!(json::to_value(&data))
     }
 
     fn login(&mut self, req: &Request, res: &mut Response) -> Result {
@@ -88,6 +93,8 @@ This is a list:
             cookie.domain = Some("localhost".to_string());
             cookie.httponly = true;
             res.cookie(cookie);
+        } else {
+            try!(Err((Status::BadRequest, "expected username field")))
         }
 
         ok!(Status::NoContent)
@@ -132,7 +139,7 @@ fn main() {
     let mut router = Router::new();
     router.get("/", MyApp::home);
     router.get("/hello/:first_name/:last_name", MyApp::hello);
-    router.get("/settings", MyApp::settings);
+    router.get("/counter", MyApp::counter);
 
     router.get("/redirect", MyApp::redirect);
     router.get("/streaming", MyApp::streaming);
