@@ -227,13 +227,13 @@ pub struct Edge {
 #[macro_export]
 macro_rules! ok {
     () => (
-        return Ok(Action::End);
+        return Ok($crate::Action::End);
     );
     ($exp:expr) => (
-        return Ok(std::convert::From::from($exp));
+        return Ok(::std::convert::From::from($exp));
     );
     ($e1:expr, $e2:expr) => (
-        return Ok(std::convert::From::from(($e1, $e2)));
+        return Ok(::std::convert::From::from(($e1, $e2)));
     )
 }
 
