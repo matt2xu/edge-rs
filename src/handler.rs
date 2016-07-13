@@ -12,7 +12,7 @@ use hyper::status::StatusCode as Status;
 
 use scoped_pool::Scope;
 
-use serde::ser::Serialize as ToJson;
+use serde_json::value as json;
 
 use url::Url;
 
@@ -193,7 +193,10 @@ fn process_handle_result(response: &mut Response, result: Result, handlebars: &H
     match result {
         Ok(handler) => {
             match handler.into() {
-                Action::End => {
+                Action::End(status) => {
+                    if let Some(status) = status {
+                        response.status(status);
+                    }
                     Body::Empty
                 }
                 Action::Redirect(status, url) => {
@@ -202,7 +205,7 @@ fn process_handle_result(response: &mut Response, result: Result, handlebars: &H
                     Body::Empty
                 }
                 Action::Render(name, json) => {
-                    let buffer = render(response, handlebars, &name, json);
+                    let buffer = render(response, handlebars, &name, &json);
                     Body::Some(buffer)
                 }
                 Action::Send(body) => {
@@ -240,13 +243,12 @@ fn process_handle_result(response: &mut Response, result: Result, handlebars: &H
 /// Renders the template with the given name using the given data.
 ///
 /// If no Content-Type header is set, the content type is set to `text/html`.
-fn render<T: ToJson>(response: &mut Response, handlebars: &Handlebars, name: &str, data: T) -> Buffer {
-    let need_content_type = !response.headers.has::<ContentType>();
-    if need_content_type {
+fn render(response: &mut Response, handlebars: &Handlebars, name: &str, json: &json::Value) -> Buffer {
+    if !response.headers.has::<ContentType>() {
         response.header(ContentType::html());
     }
 
-    let result = handlebars.render(name, &data);
+    let result = handlebars.render(name, json);
     result.unwrap().into_bytes().into()
 }
 

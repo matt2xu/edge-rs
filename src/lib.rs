@@ -227,7 +227,7 @@ pub struct Edge {
 #[macro_export]
 macro_rules! ok {
     () => (
-        return Ok($crate::Action::End);
+        return Ok($crate::Action::End(None));
     );
     ($exp:expr) => (
         return Ok(::std::convert::From::from($exp));

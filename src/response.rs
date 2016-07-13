@@ -5,6 +5,7 @@ use hyper::Headers;
 use hyper::mime::{Mime, TopLevel, SubLevel, Attr, Value};
 
 use serde_json::value as json;
+use serde_json::value::ToJson;
 
 use std::any::Any;
 use std::boxed::Box;
@@ -70,10 +71,13 @@ impl From<(Status, String)> for Error {
     }
 }
 
-/// Defines the handler result
+/// Defines the action to be taken when returning from a handler
 pub enum Action {
-    /// Ends the response with no body
-    End,
+    /// Ends the response with no body and the given status (if given).
+    ///
+    /// If the status is not given, the status currently set on the response is used.
+    /// By default, a response has a status 200 OK.
+    End(Option<Status>),
 
     /// Redirects to the given URL with a 3xx status (use 302 Found if unsure).
     Redirect(Status, String),
@@ -83,7 +87,7 @@ pub enum Action {
     /// If no Content-Type header is set, the content type is set to `text/html`.
     Render(String, json::Value),
 
-    /// Send(body): set the status, and sends back the body
+    /// Sends the response with the given bytes as the body.
     Send(Vec<u8>),
 
     /// Returns a closure that is called with a Stream argument.
@@ -100,41 +104,76 @@ pub enum Action {
     SendFile(String)
 }
 
+/// Conversion from `()` into `End(None)`.
 impl From<()> for Action {
     fn from(_: ()) -> Action {
-        Action::End
+        Action::End(None)
     }
 }
 
-/// Converts a pair (status, string) into `Action::Redirect(status, url)`.
+/// Conversion from `Status` into `End(Some(status))`.
+impl From<Status> for Action {
+    fn from(status: Status) -> Action {
+        Action::End(Some(status))
+    }
+}
+
+/// Conversion from `(Status, &str)` into `Action::Redirect(status, url)`.
 impl<'a> From<(Status, &'a str)> for Action {
     fn from(pair: (Status, &'a str)) -> Action {
         Action::Redirect(pair.0, pair.1.to_string())
     }
 }
 
-/// Converts a pair (status, string) into `Action::Redirect(status, url)`.
+/// Conversion from `(Status, String)` into `Action::Redirect(status, url)`.
 impl From<(Status, String)> for Action {
     fn from(pair: (Status, String)) -> Action {
         From::from((pair.0, pair.1.as_str()))
     }
 }
 
-/// Converts a pair (string, json) into `Action::Render(template_name, json)`.
-impl<'a> From<(&'a str, json::Value)> for Action {
-    fn from(pair: (&'a str, json::Value)) -> Action {
-        Action::Render(pair.0.to_string(), pair.1)
+/// Conversion from `(&str, T)`, where `T` can be converted to a JSON value,
+/// into `Action::Render(template_name, json)`.
+impl<'a, T> From<(&'a str, T)> for Action where T: ToJson {
+    fn from(pair: (&'a str, T)) -> Action {
+        Action::Render(pair.0.to_string(), pair.1.to_json())
     }
 }
 
-/// Converts a pair (string, json) into `Action::Render(template_name, json)`.
-impl From<(String, json::Value)> for Action {
-    fn from(pair: (String, json::Value)) -> Action {
-        Action::Render(pair.0, pair.1)
+/// Conversion from `(String, T)`, where `T` can be converted to a JSON value,
+/// into `Action::Render(template_name, json)`.
+impl<T> From<(String, T)> for Action where T: ToJson {
+    fn from(pair: (String, T)) -> Action {
+        Action::Render(pair.0, pair.1.to_json())
     }
 }
 
-/// 
+/// Conversion from `Vec<u8>` into `Action::Send(bytes)`.
+impl From<Vec<u8>> for Action {
+    fn from(bytes: Vec<u8>) -> Action {
+        Action::Send(bytes)
+    }
+}
+
+/// Conversion from `&str` into `Action::Send(bytes)`.
+impl<'a> From<&'a str> for Action {
+    fn from(string: &'a str) -> Action {
+        Action::Send(string.as_bytes().to_vec())
+    }
+}
+
+/// Conversion from `String` into `Action::Send(bytes)`.
+impl From<String> for Action {
+    fn from(string: String) -> Action {
+        Action::Send(string.into_bytes())
+    }
+}
+
+/// Wraps the given closure in a box and returns `Ok(Action::Stream(box))`.
+///
+/// The closure will be called with a writer implementing the `Write` trait
+/// so that each call to `write` notifies the handler that data can be written
+/// to the HTTP transport.
 pub fn stream<F, T, R>(closure: F) -> Result where T: Any, F: 'static + Fn(&mut T, &mut Write) -> io::Result<R> {
     Ok(Action::Stream(Box::new(move |any, writer| {
         if let Some(app) = any.downcast_mut::<T>() {
@@ -143,27 +182,6 @@ pub fn stream<F, T, R>(closure: F) -> Result where T: Any, F: 'static + Fn(&mut 
             }
         }
     })))
-}
-
-/// Converts a vector of bytes into `Action::Send(bytes)`.
-impl From<Vec<u8>> for Action {
-    fn from(bytes: Vec<u8>) -> Action {
-        Action::Send(bytes)
-    }
-}
-
-/// Converts a &str into `Action::Send(bytes)`.
-impl<'a> From<&'a str> for Action {
-    fn from(string: &'a str) -> Action {
-        Action::Send(string.as_bytes().to_vec())
-    }
-}
-
-/// Converts a string into `Action::Send(bytes)`.
-impl From<String> for Action {
-    fn from(string: String) -> Action {
-        Action::Send(string.into_bytes())
-    }
 }
 
 /// This represents the response that will be sent back to the application.
@@ -244,8 +262,7 @@ impl Response {
     ///   - video: avi, mp4, mpg, mpeg, ts
     /// If the file does not exist, this method sends a 404 Not Found response.
     fn send_file<P: AsRef<Path>>(&mut self, path: P) -> Option<Vec<u8>> {
-        let need_content_type = !self.headers.has::<ContentType>();
-        if need_content_type {
+        if !self.headers.has::<ContentType>() {
             let extension = path.as_ref().extension();
             if let Some(ext) = extension {
                 let content_type = match ext.to_string_lossy().as_ref() {

@@ -12,7 +12,6 @@ extern crate lazy_static;
 
 use edge::{json, Edge, Router, Cookie, Request, Response, Result, Action, Status, stream};
 use edge::header::AccessControlAllowOrigin;
-use edge::json::value::ToJson;
 
 use std::io::Write;
 use std::sync::Arc;
@@ -64,7 +63,7 @@ This is a list:
 - item 2
 
 "#));
-        Ok(("hello", data.to_json()).into())
+        ok!("hello", data)
     }
 
     fn settings(&mut self, req: &Request, res: &mut Response) -> Result {
@@ -91,14 +90,13 @@ This is a list:
             res.cookie(cookie);
         }
 
-        res.status(Status::NoContent);
-        ok!()
+        ok!(Status::NoContent)
     }
 
     fn redirect(&mut self, _req: &Request, _res: &mut Response) -> Result {
         println!("waiting 3 seconds");
         thread::sleep(Duration::from_secs(3));
-        Ok(Action::Redirect(Status::Found, "http://google.com".to_string()))
+        ok!(Status::Found, "http://google.com")
     }
 
     fn streaming(&mut self, _req: &Request, _res: &mut Response) -> Result {
@@ -118,7 +116,7 @@ This is a list:
 
 impl MyApp {
     fn before(&mut self, req: &mut Request, _response: &mut Response) {
-        println!("hello middleware for request {:?}", req.path());
+        debug!("hello middleware for request {:?}", req.path());
     }
 }
 
