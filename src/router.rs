@@ -170,13 +170,11 @@ pub fn get_inner<T>(router: Router<T>) -> RouterAny {
 
 /// Signature for a callback method
 pub enum Callback {
-    Instance(Box<Fn(&mut Any, &Request, &mut Response) -> Result>),
+    Instance(Box<Fn(&mut Any, &Request, &mut Response) -> Result + Sync>),
     Static(Static)
 }
 
-unsafe impl Sync for Callback {}
-
-pub type Middleware = Box<Fn(&mut Any, &mut Request, &mut Response)>;
+pub type Middleware = Box<Fn(&mut Any, &mut Request, &mut Response) + Sync>;
 
 /// Router structure
 pub struct RouterAny {
@@ -185,8 +183,6 @@ pub struct RouterAny {
     middleware: Vec<Middleware>,
     routes: HashMap<Method, Vec<Route>>
 }
-
-unsafe impl Sync for RouterAny {}
 
 impl RouterAny {
     pub fn new<T: Default + Any + Send>() -> RouterAny {
