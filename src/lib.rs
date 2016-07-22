@@ -281,12 +281,11 @@ impl Edge {
         let addr = self.base_url.to_socket_addrs().unwrap().next().unwrap();
         let listener = HttpListener::bind(&addr).unwrap();
 
-        // 50% threads for the pool, 50% for the listeners
-        let num_threads = ::std::cmp::max(num_cpus::get() / 2, 1);
-        let pool = Pool::new(num_threads);
+        let num_cpus = num_cpus::get();
+        let pool = Pool::new(num_cpus * 4);
         pool.scoped(|pool_scope| {
             crossbeam::scope(|scope| {
-                for i in 0..num_threads {
+                for i in 0..num_cpus {
                     let listener = listener.try_clone().unwrap();
                     let base_url = &self.base_url;
                     let routers = &self.routers;
