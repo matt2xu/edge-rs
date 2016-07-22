@@ -39,9 +39,6 @@ impl Buffer {
         self.content.resize(capacity, 0);
     }
 
-    /// used when writing to check whether the buffer still has data
-    pub fn is_empty(&self) -> bool { self.pos == self.len() }
-
     /// returns the length of this buffer's content
     pub fn len(&self) -> usize { self.content.len() }
 

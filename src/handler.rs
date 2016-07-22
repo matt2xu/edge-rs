@@ -27,8 +27,9 @@ use std::any::Any;
 use std::io::{self, Write};
 
 enum Reply {
-    Headers(Response),
-    Body(Buffer)
+    Initial(Response, Option<Buffer>),
+    Buffer(Buffer),
+    End
 }
 
 enum Body {
@@ -50,7 +51,7 @@ fn notify(control: &Control) {
 
 impl Write for Stream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.worker.push(Reply::Body(buf.to_vec().into()));
+        self.worker.push(Reply::Buffer(buf.to_vec().into()));
         notify(&self.control);
         Ok(buf.len())
     }
@@ -62,7 +63,7 @@ impl Write for Stream {
 
 impl Drop for Stream {
     fn drop(&mut self) {
-        self.worker.push(Reply::Body(vec![].into()));
+        self.worker.push(Reply::End);
         notify(&self.control);
     }
 }
@@ -79,12 +80,14 @@ pub struct EdgeHandler<'handler, 'scope: 'handler> {
 
     handlebars: &'scope Handlebars,
     control: Control,
-    stealer: Option<Stealer<Reply>>,
+    worker: Option<Worker<Reply>>,
+    stealer: Stealer<Reply>,
     streaming: bool
 }
 
 impl<'handler, 'scope> EdgeHandler<'handler, 'scope> {
     pub fn new(scope: &'handler Scope<'scope>, base_url: &'handler Url, routers: &'scope [RouterAny], handlebars: &'scope Handlebars, control: Control) -> EdgeHandler<'handler, 'scope> {
+        let (worker, stealer) = deque();
         EdgeHandler {
             scope: scope,
             base_url: base_url,
@@ -95,15 +98,14 @@ impl<'handler, 'scope> EdgeHandler<'handler, 'scope> {
 
             handlebars: handlebars,
             control: control,
-            stealer: None,
+            worker: Some(worker),
+            stealer: stealer,
             streaming: false
         }
     }
 
     fn callback(&mut self) -> Next {
-        let (mut worker, stealer) = deque();
-        self.stealer = Some(stealer);
-
+        let mut worker = self.worker.take().unwrap();
         let mut req = self.request.take().unwrap();
 
         let result = self.routers.iter().filter_map(|router|
@@ -132,21 +134,16 @@ impl<'handler, 'scope> EdgeHandler<'handler, 'scope> {
                         Callback::Static(ref f) => f(&req, &mut response)
                     };
 
-                match process_handle_result(&mut response, result, handlebars) {
-                    Body::Empty => {
-                        worker.push(Reply::Headers(response));
-                        notify(&ctrl);
-                    }
-                    Body::Some(body) => {
-                        response.len(body.len() as u64);
-                        worker.push(Reply::Headers(response));
-                        worker.push(Reply::Body(body));
-                        notify(&ctrl);
-                    }
-                    Body::Streaming(closure) => {
-                        worker.push(Reply::Headers(response));
-                        notify(&ctrl);
+                let body = process_handle_result(&mut response, result, handlebars);
+                if let Body::Some(body) = body {
+                    response.len(body.len() as u64);
+                    worker.push(Reply::Initial(response, Some(body)));
+                    notify(&ctrl);
+                } else {
+                    worker.push(Reply::Initial(response, None));
+                    notify(&ctrl);
 
+                    if let Body::Streaming(closure) = body {
                         let mut stream = Stream {
                             worker: worker,
                             control: ctrl
@@ -162,21 +159,16 @@ impl<'handler, 'scope> EdgeHandler<'handler, 'scope> {
             //warn!("route not found for path {:?}", req.path())
             let mut response = Response::new();
             response.status(Status::NotFound).content_type("text/plain");
-            worker.push(Reply::Headers(response));
-            worker.push(Reply::Body(format!("not found: {:?}", req.path()).into_bytes().into()));
+            worker.push(Reply::Initial(response, Some(format!("not found: {:?}", req.path()).into_bytes().into())));
             Next::write()
         }
     }
 
     fn bad_request(&mut self, message: &str) -> Next {
-        let (mut worker, stealer) = deque();
-        self.stealer = Some(stealer);
-
         error!("Bad Request: {}", message);
         let mut response = Response::new();
         response.status(Status::BadRequest).content_type("text/plain; charset=UTF-8");
-        worker.push(Reply::Headers(response));
-        worker.push(Reply::Body(message.to_string().into_bytes().into()));
+        self.worker.as_mut().unwrap().push(Reply::Initial(response, Some(message.to_string().into_bytes().into())));
         Next::write()
     }
 
@@ -296,53 +288,53 @@ impl<'handler, 'scope> Handler<HttpStream> for EdgeHandler<'handler, 'scope> {
         debug!("on_response");
 
         // we got here from callback directly or Resp notified the Control
-        loop {
-            match self.stealer.as_ref().unwrap().steal() {
-                Steal::Data(reply) => {
-                    match reply {
-                        Reply::Headers(response) => {
-                            self.streaming = response::is_streaming(&response);
-                            let status = response.status;
+        match self.stealer.steal() {
+            Steal::Data(Reply::Initial(response, body)) => {
+                self.streaming = response::is_streaming(&response);
+                let status = response.status;
 
-                            // set status and headers
-                            res.set_status(status);
-                            *res.headers_mut() = response.headers;
+                // set status and headers
+                res.set_status(status);
+                *res.headers_mut() = response.headers;
 
-                            // 3.3.2 Content-Length
-                            // http://httpwg.org/specs/rfc7230.html#header.content-length
-                            //
-                            // A server MUST NOT send a Content-Length header field in any response
-                            // with a status code of 1xx (Informational) or 204 (No Content).
-                            //
-                            // A server MAY send a Content-Length header field in a response to a HEAD request
-                            // A server MAY send a Content-Length header field in a 304 (Not Modified) response
-                            if status.is_informational() ||
-                                status == Status::NoContent || status == Status::NotModified ||
-                                self.is_head_request {
-                                // we remove any ContentLength header in those cases
-                                // even in 304 and response to HEAD
-                                // because we cannot guarantee that the length is the same
-                                res.headers_mut().remove::<ContentLength>();
-                                return Next::end();
-                            }
-                        }
-                        Reply::Body(body) => {
-                            debug!("has body");
-                            self.buffer = Some(body);
-                            return Next::write();
+                // 3.3.2 Content-Length
+                // http://httpwg.org/specs/rfc7230.html#header.content-length
+                //
+                // A server MUST NOT send a Content-Length header field in any response
+                // with a status code of 1xx (Informational) or 204 (No Content).
+                //
+                // A server MAY send a Content-Length header field in a response to a HEAD request
+                // A server MAY send a Content-Length header field in a 304 (Not Modified) response
+                if status.is_informational() ||
+                    status == Status::NoContent || status == Status::NotModified ||
+                    self.is_head_request {
+                    // we remove any ContentLength header in those cases
+                    // even in 304 and response to HEAD
+                    // because we cannot guarantee that the length is the same
+                    res.headers_mut().remove::<ContentLength>();
+                    return Next::end();
+                }
+
+                match body {
+                    None => {
+                        if self.streaming {
+                            debug!("streaming mode, waiting");
+                            Next::wait()
+                        } else {
+                            debug!("has no body, ending");
+                            Next::end()
                         }
                     }
-                }
-                Steal::Empty => {
-                    if self.streaming {
-                        debug!("streaming mode, waiting");
-                        return Next::wait();
-                    } else {
-                        debug!("has no body, ending");
-                        return Next::end();
+                    Some(body) => {
+                        debug!("has body");
+                        self.buffer = Some(body);
+                        Next::write()
                     }
                 }
-                Steal::Abort => panic!("abort")
+            }
+            _ => {
+                error!("could not get reply from stealer");
+                Next::remove()
             }
         }
     }
@@ -350,50 +342,39 @@ impl<'handler, 'scope> Handler<HttpStream> for EdgeHandler<'handler, 'scope> {
     fn on_response_writable(&mut self, transport: &mut Encoder<HttpStream>) -> Next {
         debug!("on_response_writable");
 
-        if self.streaming {
-            if self.buffer.is_none() {
-                self.buffer = match self.stealer.as_ref().unwrap().steal() {
-                    Steal::Data(Reply::Body(body)) => Some(body),
-                    Steal::Empty => None,
-                    _ => panic!("unexpected")
-                };
-            }
-
-            if self.buffer.is_none() {
-                // no buffer available yet
-                Next::wait()
-            } else {
-                let empty = self.buffer.as_mut().unwrap().is_empty();
-                if empty {
-                    // an empty body means no more data to write
-                    debug!("done writing");
-                    Next::end()
-                } else {
-                    let result = self.buffer.as_mut().unwrap().write_to(transport);
-                    if let Ok(keep_writing) = result {
-                        if keep_writing {
-                            Next::write()
-                        } else {
-                            // done writing this buffer, try to get another one
-                            self.buffer = None;
-                            Next::write()
+        loop {
+            self.buffer = match self.buffer {
+                None => {
+                    match self.stealer.steal() {
+                        Steal::Data(Reply::Buffer(body)) => Some(body),
+                        Steal::Data(Reply::End) => {
+                            debug!("done writing");
+                            return Next::end();
                         }
-                    } else {
-                        Next::remove()
+                        Steal::Empty => {
+                            // no data yet, wait for notification
+                            return Next::wait();
+                        }
+                        _ => panic!("unexpected")
                     }
                 }
-            }
-        } else {
-            let body = self.buffer.as_mut().unwrap();
-            if let Ok(keep_writing) = body.write_to(transport) {
-                if keep_writing {
-                    Next::write()
-                } else {
-                    Next::end()
+                Some(ref mut buffer) => {
+                    if let Ok(keep_writing) = buffer.write_to(transport) {
+                        if keep_writing {
+                            return Next::write();
+                        } else {
+                            // this buffer has been fully written to the transport
+                            if self.streaming {
+                                None
+                            } else {
+                                return Next::end();
+                            }
+                        }
+                    } else {
+                        return Next::remove();
+                    }
                 }
-            } else {
-                Next::remove()
-            }
+            };
         }
     }
 
