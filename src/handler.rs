@@ -42,12 +42,16 @@ struct Stream {
     control: Control
 }
 
+fn notify(control: &Control) {
+    if let Err(e) = control.ready(Next::write()) {
+        error!("could not notify handler: {}", e);
+    }
+}
+
 impl Write for Stream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.worker.push(Reply::Body(buf.to_vec().into()));
-        if let Err(e) = self.control.ready(Next::write()) {
-            error!("could not notify handler: {}", e);
-        }
+        notify(&self.control);
         Ok(buf.len())
     }
 
@@ -59,9 +63,7 @@ impl Write for Stream {
 impl Drop for Stream {
     fn drop(&mut self) {
         self.worker.push(Reply::Body(vec![].into()));
-        if let Err(e) = self.control.ready(Next::write()) {
-            error!("could not notify handler: {}", e);
-        }
+        notify(&self.control);
     }
 }
 
@@ -113,14 +115,13 @@ impl<'handler, 'scope> EdgeHandler<'handler, 'scope> {
         ).next();
 
         if let Some((router, callback)) = result {
-            let mut boxed_app = router.new_instance();
-
             // add job to scoped pool
             let ctrl = self.control.clone();
             let handlebars = self.handlebars;
 
             self.scope.execute(move || {
                 let mut response = Response::new();
+                let mut boxed_app = router.new_instance();
                 let app = boxed_app.as_mut();
                 let result =
                     match *callback {
@@ -131,29 +132,27 @@ impl<'handler, 'scope> EdgeHandler<'handler, 'scope> {
                         Callback::Static(ref f) => f(&req, &mut response)
                     };
 
-                let body = process_handle_result(&mut response, result, handlebars);
-                if let Body::Some(ref body) = body {
-                    response.len(body.len() as u64);
-                }
-                worker.push(Reply::Headers(response));
-                match body {
-                    Body::Some(body) => { worker.push(Reply::Body(body)); }
+                match process_handle_result(&mut response, result, handlebars) {
+                    Body::Empty => {
+                        worker.push(Reply::Headers(response));
+                        notify(&ctrl);
+                    }
+                    Body::Some(body) => {
+                        response.len(body.len() as u64);
+                        worker.push(Reply::Headers(response));
+                        worker.push(Reply::Body(body));
+                        notify(&ctrl);
+                    }
                     Body::Streaming(closure) => {
-                        if let Err(e) = ctrl.ready(Next::write()) {
-                            error!("could not notify handler: {}", e);
-                        }
+                        worker.push(Reply::Headers(response));
+                        notify(&ctrl);
+
                         let mut stream = Stream {
                             worker: worker,
                             control: ctrl
                         };
                         closure(app, &mut stream);
-                        return;
                     }
-                    Body::Empty => ()
-                }
-
-                if let Err(e) = ctrl.ready(Next::write()) {
-                    error!("could not notify handler: {}", e);
                 }
             });
 
