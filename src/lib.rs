@@ -35,21 +35,25 @@
 //! The most basic application: no state, a single page that prints Hello, world!
 //!
 //! ```no_run
+//! #[macro_use]
 //! extern crate edge;
 //!
-//! use edge::{Edge, Request, Response};
+//! use edge::{Edge, Request, Response, Result, Router};
 //!
+//! #[derive(Default)]
 //! struct Hello;
 //! impl Hello {
-//!     fn hello(&self, _req: &mut Request, mut res: Response) {
+//!     fn hello(&mut self, _req: &Request, res: &mut Response) -> Result {
 //!         res.content_type("text/plain");
-//!         res.send("Hello, world!")
+//!         ok!("Hello, world!")
 //!     }
 //! }
 //!
 //! fn main() {
-//!     let mut edge = Edge::new("0.0.0.0:3000", Hello);
-//!     edge.get("/", Hello::hello);
+//!     let mut edge = Edge::new("0.0.0.0:3000");
+//!     let mut router = Router::new();
+//!     router.get("/", Hello::hello);
+//!     edge.mount("/", router);
 //!     edge.start().unwrap();
 //! }
 //! ```
@@ -62,30 +66,30 @@
 //! the response.
 //!
 //! ```no_run
+//! #[macro_use]
 //! extern crate edge;
 //!
-//! use edge::{Edge, Request, Response};
+//! use edge::{Edge, Request, Response, Result, Router, Status};
 //! use std::thread;
 //! use std::time::Duration;
 //!
+//! #[derive(Default)]
 //! struct AsyncHello;
 //! impl AsyncHello {
-//!     fn hello(&self, _req: &mut Request, mut res: Response) {
-//!         thread::spawn(move || {
-//!             println!("waiting 1 second");
-//!             thread::sleep(Duration::from_secs(1));
+//!     fn hello(&mut self, _req: &Request, res: &mut Response) -> Result {
+//!         println!("waiting 1 second");
+//!         thread::sleep(Duration::from_secs(1));
 //!
-//!             res.content_type("text/plain");
-//!             res.send("Hello, world!")
-//!         });
-//!
-//!         // the handler returns immediately without waiting for the thread
+//!         res.content_type("text/plain");
+//!         ok!(Status::Ok, "Hello, world!")
 //!     }
 //! }
 //!
 //! fn main() {
-//!     let mut edge = Edge::new("0.0.0.0:3000", AsyncHello);
-//!     edge.get("/", AsyncHello::hello);
+//!     let mut edge = Edge::new("0.0.0.0:3000");
+//!     let mut router = Router::new();
+//!     router.get("/", AsyncHello::hello);
+//!     edge.mount("/", router);
 //!     edge.start().unwrap();
 //! }
 //! ```
@@ -97,31 +101,33 @@
 //! setting a custom Server header.
 //!
 //! ```no_run
+//! #[macro_use]
 //! extern crate edge;
 //!
-//! use edge::{Edge, Request, Response, Status};
+//! use edge::{Edge, Request, Response, Result, Router, Status};
 //! use edge::header::Server;
 //! use std::collections::BTreeMap;
 //!
-//! struct Templating {
-//!     version: &'static str
-//! }
+//! const VERSION: &'static str = "0.3";
 //!
+//! #[derive(Default)]
+//! struct Templating;
 //! impl Templating {
-//!     fn page_handler(&self, req: &mut Request, mut res: Response) {
+//!     fn page_handler(&mut self, req: &Request, res: &mut Response) -> Result {
 //!         let mut data = BTreeMap::new();
-//!         data.insert("title", req.param("page").unwrap());
-//!         data.insert("version", self.version);
+//!         data.insert("title", req.param("page"));
+//!         data.insert("version", Some(VERSION));
 //!
-//!         res.content_type("text/html").header(Server(format!("Edge version {}", self.version)));
-//!         res.render("tmpl", data)
+//!         res.content_type("text/html").header(Server(format!("Edge version {}", VERSION)));
+//!         ok!("tmpl", data)
 //!     }
 //! }
 //!
 //! fn main() {
-//!     let app = Templating { version: "0.1" };
-//!     let mut edge = Edge::new("0.0.0.0:3000", app);
-//!     edge.get("/:page", Templating::page_handler);
+//!     let mut edge = Edge::new("0.0.0.0:3000");
+//!     let mut router = Router::new();
+//!     router.get("/:page", Templating::page_handler);
+//!     edge.mount("/", router);
 //!     edge.register_template("tmpl");
 //!     edge.start().unwrap();
 //! }
@@ -134,34 +140,6 @@
 //! mechanisms (locks, mutexes) in a handler directly. Prefer non-blocking calls,
 //! like channels' try_recv, or move blocking code in a separate thread,
 //! see the example for asynchronous handling above.
-//!
-//! ```no_run
-//! extern crate edge;
-//!
-//! use edge::{Edge, Request, Response, Status};
-//! use std::sync::atomic::{AtomicUsize, Ordering};
-//!
-//! struct Counting {
-//!     counter: AtomicUsize
-//! }
-//!
-//! impl Counting {
-//!     fn new() -> Counting { Counting { counter: AtomicUsize::new(0) } }
-//!
-//!     fn home(&self, _req: &mut Request, mut res: Response) {
-//!         let visits = self.counter.load(Ordering::Relaxed);
-//!         self.counter.store(visits + 1, Ordering::Relaxed);
-//!
-//!         res.status(Status::Ok).content_type("text/plain");
-//!         res.send(format!("Hello, world! {} visits", visits))
-//!     }
-//! }
-//!
-//! fn main() {
-//!     let mut cter = Edge::new("0.0.0.0:3000", Counting::new());
-//!     cter.get("/", Counting::home);
-//!     cter.start().unwrap();
-//! }
 //! ```
 
 extern crate crossbeam;
