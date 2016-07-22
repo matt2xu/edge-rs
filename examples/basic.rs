@@ -13,7 +13,6 @@ extern crate lazy_static;
 use edge::{json, Edge, Router, Cookie, Request, Response, Result, Action, Status, stream};
 use edge::header::AccessControlAllowOrigin;
 
-use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
